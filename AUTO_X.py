@@ -1,21 +1,24 @@
-import os
+"""Tkinter GUI for composing X (Twitter) threads."""
+
+import logging
 import tkinter as tk
+logging.basicConfig(level=logging.INFO)
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 from typing import List, Optional
 
-# Tweepy is used for interacting with the Twitter (X) API
-# Make sure you have tweepy installed: `pip install tweepy`
-try:
-    import tweepy
-except ImportError:
-    raise ImportError("Tweepy is required. Install it with `pip install tweepy`.")
+from config import load_credentials
+from twitter_api import publish_thread
 
 
 MAX_TWEET_LEN = 280  # Twitter/X character limit
 
 
 def split_text_into_tweets(text: str, limit: int = MAX_TWEET_LEN) -> List[str]:
-    """Greedy word‑boundary split so every part fits `limit` chars."""
+    """Return a list of tweet-sized chunks from ``text``.
+
+    The split respects word boundaries whenever possible and falls back to a
+    hard cut if a single word is longer than ``limit``.
+    """
     chunks: List[str] = []
     text = text.strip()
     while len(text) > limit:
@@ -30,7 +33,10 @@ def split_text_into_tweets(text: str, limit: int = MAX_TWEET_LEN) -> List[str]:
 
 
 class ThreadComposer(tk.Tk):
-    def __init__(self):
+    """Tkinter window to compose and publish threads."""
+
+    def __init__(self) -> None:
+        """Initialize the GUI widgets and state."""
         super().__init__()
         self.title("Tweet Thread Composer")
         self.geometry("900x700")
@@ -42,7 +48,8 @@ class ThreadComposer(tk.Tk):
         self._build_widgets()
 
     # ───────────────────────────────────────────────────── GUI CONSTRUCTION ────
-    def _build_widgets(self):
+    def _build_widgets(self) -> None:
+        """Create and place the GUI widgets."""
         # Input text area
         ttk.Label(self, text="Enter your full thread (blank line = manual break):").pack(anchor="w", padx=6, pady=(6, 0))
         self.input_box = scrolledtext.ScrolledText(self, height=10, wrap=tk.WORD)
@@ -59,7 +66,8 @@ class ThreadComposer(tk.Tk):
         self.publish_btn.pack(pady=(4, 10))
 
     # ───────────────────────────────────────────────────── EVENT HANDLERS ────
-    def _parse_handler(self):
+    def _parse_handler(self) -> None:
+        """Split the text box contents into individual tweets."""
         raw = self.input_box.get("1.0", tk.END).strip()
         if not raw:
             messagebox.showwarning("Nothing to parse", "Write something first!")
@@ -70,6 +78,7 @@ class ThreadComposer(tk.Tk):
             tweets = [seg.strip() for seg in raw.split("\n\n") if seg.strip()]
         else:
             tweets = split_text_into_tweets(raw)
+        logging.info("Parsed %d tweets", len(tweets))
 
         # Guard against empty list or too many tweets (Twitter caps at 25 in UI)
         if not tweets:
@@ -102,46 +111,35 @@ class ThreadComposer(tk.Tk):
 
         self.publish_btn.configure(state="normal")
 
-    def _image_handler(self, index: int):
-        path = filedialog.askopenfilename(title="Select image", filetypes=[("Images", "*.png *.jpg *.jpeg *.gif *.webp")])
+    def _image_handler(self, index: int) -> None:
+        """Prompt the user for an image and attach it to the given tweet."""
+        path = filedialog.askopenfilename(
+            title="Select image", filetypes=[("Images", "*.png *.jpg *.jpeg *.gif *.webp")]
+        )
         if path:
             self.images[index] = path
             messagebox.showinfo("Image attached", f"Image added to tweet {index + 1}.")
 
-    def _publish_handler(self):
-        # Gather credentials from env vars – safest approach for desktop apps
-        k = os.getenv("TWITTER_API_KEY")
-        ks = os.getenv("TWITTER_API_SECRET")
-        t = os.getenv("TWITTER_ACCESS_TOKEN")
-        ts = os.getenv("TWITTER_ACCESS_SECRET")
-
-        if not all([k, ks, t, ts]):
-            messagebox.showerror("Missing credentials",
-                                 "Set TWITTER_API_KEY, TWITTER_API_SECRET, TWITTER_ACCESS_TOKEN and TWITTER_ACCESS_SECRET environment variables.")
+    def _publish_handler(self) -> None:
+        """Publish the composed thread using the Twitter API."""
+        creds = load_credentials()
+        if not all([creds.api_key, creds.api_secret, creds.access_token, creds.access_secret]):
+            messagebox.showerror(
+                "Missing credentials",
+                "Set TWITTER_API_KEY, TWITTER_API_SECRET, TWITTER_ACCESS_TOKEN and TWITTER_ACCESS_SECRET environment variables.",
+            )
+            logging.error("Twitter credentials not set")
             return
 
         try:
-            auth = tweepy.OAuth1UserHandler(k, ks, t, ts)
-            api = tweepy.API(auth)
-
-            previous_id: Optional[int] = None
-            for txt, img in zip(self.tweets, self.images):
-                media_ids = None
-                if img:
-                    upload = api.media_upload(img)
-                    media_ids = [upload.media_id]
-
-                status = api.update_status(status=txt,
-                                           in_reply_to_status_id=previous_id,
-                                           auto_populate_reply_metadata=bool(previous_id),
-                                           media_ids=media_ids)
-                previous_id = status.id
-
+            publish_thread(self.tweets, self.images, creds)
             messagebox.showinfo("Success", "Thread published successfully!")
         except Exception as exc:
+            logging.exception("Failed to publish thread")
             messagebox.showerror("Error while publishing", str(exc))
 
 
 if __name__ == "__main__":
     app = ThreadComposer()
     app.mainloop()
+

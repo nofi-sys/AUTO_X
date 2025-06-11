@@ -1,0 +1,2 @@
+# Dependencies for X Thread Composer
+Tweepy>=4.14
