@@ -8,6 +8,7 @@ from typing import List, Optional
 
 from config import load_credentials
 from twitter_api import publish_thread
+from plain_thread import parse_plain_thread
 
 
 MAX_TWEET_LEN = 280  # Twitter/X character limit
@@ -55,7 +56,8 @@ class ThreadComposer(tk.Tk):
         self.input_box = scrolledtext.ScrolledText(self, height=10, wrap=tk.WORD)
         self.input_box.pack(fill="x", padx=6, pady=6)
 
-        ttk.Button(self, text="↳ Parse into Tweets", command=self._parse_handler).pack(pady=(0, 8))
+        ttk.Button(self, text="↳ Parse into Tweets", command=self._parse_handler).pack(pady=(0, 4))
+        ttk.Button(self, text="🡆 Parse Plain-Thread", command=self._parse_plain_handler).pack(pady=(0, 8))
 
         # Dynamic container for tweet previews & image selectors
         self.tweets_frame = ttk.Frame(self)
@@ -88,14 +90,29 @@ class ThreadComposer(tk.Tk):
             if not messagebox.askyesno("Long thread", f"You are about to post {len(tweets)} tweets. Continue?"):
                 return
 
-        # Clear previous widgets
+        self._render_tweets(tweets)
+
+    def _parse_plain_handler(self) -> None:
+        """Parse the text using the Plain-Thread v1 format."""
+        raw = self.input_box.get("1.0", tk.END)
+        try:
+            tweets = parse_plain_thread(raw)
+        except Exception as exc:  # pragma: no cover - Tkinter errors not easily testable
+            messagebox.showerror("Parse error", str(exc))
+            return
+        if len(tweets) > 50:
+            if not messagebox.askyesno("Long thread", f"You are about to post {len(tweets)} tweets. Continue?"):
+                return
+        self._render_tweets(tweets)
+
+    def _render_tweets(self, tweets: List[str]) -> None:
+        """Display parsed tweets in the preview list."""
         for w in self.tweets_frame.winfo_children():
             w.destroy()
 
         self.tweets = tweets
         self.images = [None] * len(tweets)
 
-        # Build tweet preview widgets
         for idx, txt in enumerate(tweets):
             row = ttk.Frame(self.tweets_frame)
             row.pack(fill="x", pady=2)
