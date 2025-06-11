@@ -35,3 +35,19 @@ python AUTO_X.py
 Type your entire thread in the text box. You can separate tweets manually using a blank line, or let the app split the text automatically.
 
 Once parsed, you can attach images to each tweet and publish the thread.
+
+## Plain-Thread v1
+
+The app also supports parsing a numeric format for pre-written threads. Paste text following this structure:
+
+```
+1
+
+First tweet text
+
+2
+
+Second tweet text
+```
+
+Each block begins with an index line containing only digits, followed by a blank line and the tweet body. Indices must be consecutive and each body must stay within 280 characters. Use the **Parse Plain-Thread** button to load the tweets automatically.
