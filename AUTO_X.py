@@ -1,14 +1,16 @@
 """Tkinter GUI for composing X (Twitter) threads."""
 
 import logging
+import os
 import tkinter as tk
-logging.basicConfig(level=logging.INFO)
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 from typing import List, Optional
 
 from config import load_credentials
-from twitter_api import publish_thread
 from plain_thread import parse_plain_thread
+from twitter_api import publish_thread
+
+logging.basicConfig(level=logging.INFO)
 
 
 MAX_TWEET_LEN = 280  # Twitter/X character limit
@@ -45,8 +47,28 @@ class ThreadComposer(tk.Tk):
         # Internal state
         self.tweets: List[str] = []
         self.images: List[Optional[str]] = []
+        self.char_count_labels: List[ttk.Label] = []
+        self.image_path_labels: List[ttk.Label] = []
+
+        # Style for validation labels
+        self.style = ttk.Style(self)
+        self.style.configure("TLabel", padding=2)
+        self.style.configure("Invalid.TLabel", foreground="red")
+        self.style.configure("Valid.TLabel", foreground="black")
 
         self._build_widgets()
+
+        # Warn user on startup if credentials are not configured
+        def _check_creds() -> None:
+            creds = load_credentials()
+            if not all([creds.api_key, creds.api_secret, creds.access_token, creds.access_secret]):
+                messagebox.showwarning(
+                    "Missing Credentials",
+                    "Twitter API credentials are not fully set in environment variables. "
+                    "You can compose a thread, but publishing will fail.",
+                )
+
+        self.after_idle(_check_creds)
 
     # ───────────────────────────────────────────────────── GUI CONSTRUCTION ────
     def _build_widgets(self) -> None:
@@ -112,6 +134,8 @@ class ThreadComposer(tk.Tk):
 
         self.tweets = tweets
         self.images = [None] * len(tweets)
+        self.char_count_labels = []
+        self.image_path_labels = []
 
         for idx, txt in enumerate(tweets):
             row = ttk.Frame(self.tweets_frame)
@@ -119,14 +143,43 @@ class ThreadComposer(tk.Tk):
 
             ttk.Label(row, text=f"{idx + 1:02d}.").pack(side="left", anchor="n", padx=(0, 4))
 
-            preview = tk.Text(row, height=min(6, (len(txt) // 50) + 1), width=70, wrap=tk.WORD)
+            # --- Tweet Content ---
+            text_frame = ttk.Frame(row)
+            text_frame.pack(side="left", fill="x", expand=True)
+            preview = tk.Text(text_frame, height=min(6, (len(txt) // 50) + 1), width=70, wrap=tk.WORD)
             preview.insert("1.0", txt)
             preview.configure(state="disabled", background="#F7F7F7")
-            preview.pack(side="left", fill="x", expand=True)
+            preview.pack(side="top", fill="x", expand=True)
 
-            ttk.Button(row, text="Add Image", command=lambda i=idx: self._image_handler(i)).pack(side="left", padx=4)
+            # --- Controls & Indicators ---
+            controls_frame = ttk.Frame(row)
+            controls_frame.pack(side="left", anchor="n", padx=4)
+            ttk.Button(controls_frame, text="Add Image", command=lambda i=idx: self._image_handler(i)).pack(fill="x")
 
-        self.publish_btn.configure(state="normal")
+            char_count_label = ttk.Label(controls_frame, text=f"{len(txt)}/{MAX_TWEET_LEN}")
+            char_count_label.pack(fill="x", pady=(4, 0))
+            self.char_count_labels.append(char_count_label)
+
+            image_path_label = ttk.Label(controls_frame, text="", wraplength=120)  # Show which image is attached
+            image_path_label.pack(fill="x", pady=(4, 0))
+            self.image_path_labels.append(image_path_label)
+
+        self._validate_tweets()
+
+    def _validate_tweets(self) -> None:
+        """Check all tweets for errors and update UI accordingly."""
+        all_valid = True
+        for i, tweet_text in enumerate(self.tweets):
+            count = len(tweet_text)
+            label = self.char_count_labels[i]
+            label.config(text=f"{count}/{MAX_TWEET_LEN}")
+            if count > MAX_TWEET_LEN or count == 0:
+                label.config(style="Invalid.TLabel")
+                all_valid = False
+            else:
+                label.config(style="Valid.TLabel")
+
+        self.publish_btn.config(state="normal" if all_valid else "disabled")
 
     def _image_handler(self, index: int) -> None:
         """Prompt the user for an image and attach it to the given tweet."""
@@ -135,7 +188,8 @@ class ThreadComposer(tk.Tk):
         )
         if path:
             self.images[index] = path
-            messagebox.showinfo("Image attached", f"Image added to tweet {index + 1}.")
+            self.image_path_labels[index].config(text=os.path.basename(path))
+            messagebox.showinfo("Image attached", f"Image '{os.path.basename(path)}' added to tweet {index + 1}.")
 
     def _publish_handler(self) -> None:
         """Publish the composed thread using the Twitter API."""
