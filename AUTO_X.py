@@ -6,7 +6,8 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 from typing import List, Optional
 
-from config import load_credentials
+from ai_splitter import split_thread_with_ai
+from config import load_twitter_credentials
 from plain_thread import parse_plain_thread
 from twitter_api import publish_thread
 
@@ -60,7 +61,7 @@ class ThreadComposer(tk.Tk):
 
         # Warn user on startup if credentials are not configured
         def _check_creds() -> None:
-            creds = load_credentials()
+            creds = load_twitter_credentials()
             if not all([creds.api_key, creds.api_secret, creds.access_token, creds.access_secret]):
                 messagebox.showwarning(
                     "Missing Credentials",
@@ -79,7 +80,8 @@ class ThreadComposer(tk.Tk):
         self.input_box.pack(fill="x", padx=6, pady=6)
 
         ttk.Button(self, text="↳ Parse into Tweets", command=self._parse_handler).pack(pady=(0, 4))
-        ttk.Button(self, text="🡆 Parse Plain-Thread", command=self._parse_plain_handler).pack(pady=(0, 8))
+        ttk.Button(self, text="🡆 Parse Plain-Thread", command=self._parse_plain_handler).pack(pady=(0, 4))
+        ttk.Button(self, text="✨ Generate with AI", command=self._parse_with_ai_handler).pack(pady=(0, 8))
 
         # Dynamic container for tweet previews & image selectors
         self.tweets_frame = ttk.Frame(self)
@@ -126,6 +128,32 @@ class ThreadComposer(tk.Tk):
             if not messagebox.askyesno("Long thread", f"You are about to post {len(tweets)} tweets. Continue?"):
                 return
         self._render_tweets(tweets)
+
+    def _parse_with_ai_handler(self) -> None:
+        """Use the AI splitter to generate a thread from the input text."""
+        raw = self.input_box.get("1.0", tk.END).strip()
+        if not raw:
+            messagebox.showwarning("Nothing to generate", "Write something first!")
+            return
+
+        self.config(cursor="watch")
+        self.update_idletasks()
+
+        try:
+            tweets = split_thread_with_ai(raw)
+            logging.info("Generated %d tweets with AI", len(tweets))
+
+            if not tweets:
+                messagebox.showerror("AI Error", "The AI returned an empty thread.")
+                return
+
+            self._render_tweets(tweets)
+
+        except (ValueError, RuntimeError) as exc:
+            logging.exception("Failed to generate thread with AI")
+            messagebox.showerror("AI Generation Failed", str(exc))
+        finally:
+            self.config(cursor="")
 
     def _render_tweets(self, tweets: List[str]) -> None:
         """Display parsed tweets in the preview list."""
@@ -193,7 +221,7 @@ class ThreadComposer(tk.Tk):
 
     def _publish_handler(self) -> None:
         """Publish the composed thread using the Twitter API."""
-        creds = load_credentials()
+        creds = load_twitter_credentials()
         if not all([creds.api_key, creds.api_secret, creds.access_token, creds.access_secret]):
             messagebox.showerror(
                 "Missing credentials",
