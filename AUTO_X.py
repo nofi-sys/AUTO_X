@@ -6,12 +6,87 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 from typing import List, Optional
 
+from dotenv import load_dotenv
+
 from ai_splitter import split_thread_with_ai
 from config import load_twitter_credentials
 from plain_thread import parse_plain_thread
 from twitter_api import publish_thread
 
 logging.basicConfig(level=logging.INFO)
+
+
+def _center_window(win: tk.Toplevel) -> None:
+    """Center a Toplevel window on its parent."""
+    win.update_idletasks()
+    width = win.winfo_width()
+    height = win.winfo_height()
+    x = (win.winfo_screenwidth() // 2) - (width // 2)
+    y = (win.winfo_screenheight() // 2) - (height // 2)
+    win.geometry(f"{width}x{height}+{x}+{y}")
+
+
+class CredentialsDialog(tk.Toplevel):
+    """Dialog for entering and saving Twitter API credentials."""
+
+    def __init__(self, parent: tk.Tk) -> None:  # noqa: D107
+        super().__init__(parent)
+        self.transient(parent)
+        self.title("Enter Credentials")
+        self.parent = parent
+        self.result: Optional[List[str]] = None
+
+        # ─── Widgets ──────────────────────────────────────────────────────────
+        body = ttk.Frame(self)
+        self.initial_focus = self._create_widgets(body)
+        body.pack(padx=20, pady=20)
+        self._create_buttons()
+
+        # ─── Dialog Behavior ──────────────────────────────────────────────────
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
+        self.grab_set()
+        self.wait_window(self)
+
+    def _create_widgets(self, master: ttk.Frame) -> ttk.Widget:
+        """Create the input fields for the credentials."""
+        ttk.Label(master, text="Enter your Twitter/X API credentials:").grid(row=0, columnspan=2, sticky="w")
+
+        labels = ("API Key", "API Secret", "Access Token", "Access Secret")
+        self.entries: List[ttk.Entry] = []
+        for i, label in enumerate(labels):
+            ttk.Label(master, text=f"{label}:").grid(row=i + 1, column=0, sticky="w", padx=5, pady=5)
+            entry = ttk.Entry(master, width=50)
+            entry.grid(row=i + 1, column=1, sticky="ew", padx=5, pady=5)
+            self.entries.append(entry)
+
+        return self.entries[0]
+
+    def _create_buttons(self) -> None:
+        """Create the 'Save' and 'Cancel' buttons."""
+        box = ttk.Frame(self)
+        save_btn = ttk.Button(box, text="Save", command=self._save, default=tk.ACTIVE)
+        cancel_btn = ttk.Button(box, text="Cancel", command=self._cancel)
+        save_btn.pack(side=tk.LEFT, padx=5, pady=10)
+        cancel_btn.pack(side=tk.RIGHT, padx=5, pady=10)
+        box.pack()
+
+    def _save(self, event: Optional[tk.Event] = None) -> None:
+        """Handle the 'Save' button click."""
+        self.result = [entry.get() for entry in self.entries]
+        if not all(self.result):
+            messagebox.showwarning("Missing fields", "All credential fields are required.", parent=self)
+            return
+
+        self.withdraw()
+        self.update_idletasks()
+        self.parent.focus_set()
+        self.destroy()
+
+    def _cancel(self, event: Optional[tk.Event] = None) -> None:
+        """Handle the 'Cancel' button click or window close."""
+        self.result = None
+        self.parent.focus_set()
+        self.destroy()
 
 
 MAX_TWEET_LEN = 280  # Twitter/X character limit
@@ -60,20 +135,50 @@ class ThreadComposer(tk.Tk):
         self._build_widgets()
 
         # Warn user on startup if credentials are not configured
-        def _check_creds() -> None:
-            creds = load_twitter_credentials()
-            if not all([creds.api_key, creds.api_secret, creds.access_token, creds.access_secret]):
-                messagebox.showwarning(
-                    "Missing Credentials",
-                    "Twitter API credentials are not fully set in environment variables. "
-                    "You can compose a thread, but publishing will fail.",
-                )
+        self.after_idle(self._check_creds)
 
-        self.after_idle(_check_creds)
+    def _configure_credentials(self) -> bool:
+        """Open a dialog for the user to enter their credentials.
+
+        If the user saves, the credentials will be written to a local ``.env``
+        file and reloaded.
+        """
+        dialog = CredentialsDialog(self)
+        _center_window(dialog)
+        result = dialog.result
+        if result:
+            keys = ("TWITTER_API_KEY", "TWITTER_API_SECRET", "TWITTER_ACCESS_TOKEN", "TWITTER_ACCESS_SECRET")
+            with open(".env", "w") as f:
+                for key, value in zip(keys, result):
+                    f.write(f"{key}={value}\n")
+            load_dotenv()  # Reload .env to update current session
+            messagebox.showinfo("Success", "Credentials saved successfully.", parent=self)
+            return True
+        return False
+
+    def _check_creds(self) -> None:
+        """Check for credentials and prompt user if missing."""
+        creds = load_twitter_credentials()
+        if not all([creds.api_key, creds.api_secret, creds.access_token, creds.access_secret]):
+            if messagebox.askyesno(
+                "Missing Credentials",
+                "Twitter API credentials are not fully set.\n\n"
+                "You can compose a thread, but publishing will fail. "
+                "Do you want to enter them now?",
+            ):
+                self._configure_credentials()
 
     # ───────────────────────────────────────────────────── GUI CONSTRUCTION ────
     def _build_widgets(self) -> None:
         """Create and place the GUI widgets."""
+        # ─── Menu Bar ─────────────────────────────────────────────────────────
+        menubar = tk.Menu(self)
+        self.config(menu=menubar)
+        settings_menu = tk.Menu(menubar, tearoff=0)
+        settings_menu.add_command(label="Configure Credentials...", command=self._configure_credentials)
+        menubar.add_cascade(label="Settings", menu=settings_menu)
+
+        # ─── Main Widgets ─────────────────────────────────────────────────────
         # Input text area
         ttk.Label(self, text="Enter your full thread (blank line = manual break):").pack(anchor="w", padx=6, pady=(6, 0))
         self.input_box = scrolledtext.ScrolledText(self, height=10, wrap=tk.WORD)
@@ -223,19 +328,32 @@ class ThreadComposer(tk.Tk):
         """Publish the composed thread using the Twitter API."""
         creds = load_twitter_credentials()
         if not all([creds.api_key, creds.api_secret, creds.access_token, creds.access_secret]):
+            logging.warning("Twitter credentials not set, prompting user.")
+            if not self._configure_credentials():
+                messagebox.showinfo("Publish Cancelled", "Credentials were not provided.", parent=self)
+                return
+            creds = load_twitter_credentials()
+
+        # If after attempting to configure, they are still not valid, then abort.
+        if not all([creds.api_key, creds.api_secret, creds.access_token, creds.access_secret]):
+            logging.error("Credentials still not set after configuration attempt.")
             messagebox.showerror(
-                "Missing credentials",
-                "Set TWITTER_API_KEY, TWITTER_API_SECRET, TWITTER_ACCESS_TOKEN and TWITTER_ACCESS_SECRET environment variables.",
+                "Missing Credentials",
+                "Publishing failed because credentials are still missing.",
+                parent=self,
             )
-            logging.error("Twitter credentials not set")
             return
 
         try:
+            self.config(cursor="watch")
+            self.update_idletasks()
             publish_thread(self.tweets, self.images, creds)
-            messagebox.showinfo("Success", "Thread published successfully!")
+            messagebox.showinfo("Success", "Thread published successfully!", parent=self)
         except Exception as exc:
             logging.exception("Failed to publish thread")
-            messagebox.showerror("Error while publishing", str(exc))
+            messagebox.showerror("Error while publishing", str(exc), parent=self)
+        finally:
+            self.config(cursor="")
 
 
 if __name__ == "__main__":
