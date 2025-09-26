@@ -1,2 +1,4 @@
 # Dependencies for X Thread Composer
 Tweepy>=4.14
+openai>=1.0
+python-dotenv>=1.0

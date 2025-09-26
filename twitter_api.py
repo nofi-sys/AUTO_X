@@ -10,28 +10,38 @@ logger = logging.getLogger(__name__)
 
 
 def publish_thread(tweets: List[str], images: List[Optional[str]], creds: TwitterCredentials) -> None:
-    """Publish a sequence of tweets as a thread."""
+    """Publish a sequence of tweets as a thread using Twitter API v2."""
+    # API v1.1 client is still needed for media uploads
     auth = tweepy.OAuth1UserHandler(
         creds.api_key,
         creds.api_secret,
         creds.access_token,
         creds.access_secret,
     )
-    api = tweepy.API(auth)
+    api_v1 = tweepy.API(auth)
+
+    # API v2 client for creating tweets
+    client_v2 = tweepy.Client(
+        consumer_key=creds.api_key,
+        consumer_secret=creds.api_secret,
+        access_token=creds.access_token,
+        access_token_secret=creds.access_secret,
+    )
 
     previous_id: Optional[int] = None
     for txt, img in zip(tweets, images):
         media_ids = None
         if img:
-            upload = api.media_upload(img)
+            # The v1.1 endpoint is the recommended way to upload media for v2
+            upload = api_v1.media_upload(filename=img)
             media_ids = [upload.media_id]
 
-        status = api.update_status(
-            status=txt,
-            in_reply_to_status_id=previous_id,
-            auto_populate_reply_metadata=bool(previous_id),
+        response = client_v2.create_tweet(
+            text=txt,
+            in_reply_to_tweet_id=previous_id,
             media_ids=media_ids,
         )
-        previous_id = status.id
+        # The response contains a data object with the new tweet's details
+        previous_id = response.data["id"]
 
     logger.info("Thread published successfully")
