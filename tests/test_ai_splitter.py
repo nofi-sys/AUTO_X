@@ -9,28 +9,29 @@ class TestAiSplitter(unittest.TestCase):
     @patch("ai_splitter.load_openai_key", return_value="fake_api_key")
     @patch("ai_splitter.openai.OpenAI")
     def test_split_thread_with_ai_success(self, mock_openai_class, mock_load_key):
-        """Test the happy path where the AI returns a valid thread."""
+        """Test the happy path where the AI returns a valid list of threads."""
         # --- Mocks Setup ---
         mock_client = mock_openai_class.return_value
-        # Simulate the response from the chat completion
-        expected_thread = ["Tweet 1/2", "Tweet 2/2"]
-        response_content = json.dumps({"thread": expected_thread})
+        expected_threads = [["Tweet 1/2", "Tweet 2/2"], ["Alt Tweet 1/1"]]
+        response_content = json.dumps({"threads": expected_threads})
         mock_response = MagicMock()
         mock_response.choices[0].message.content = response_content
         mock_client.chat.completions.create.return_value = mock_response
 
         # --- Call the function ---
         text_to_split = "This is a long text to split."
-        result = split_thread_with_ai(text_to_split)
+        num_versions = 2
+        result = split_thread_with_ai(text_to_split, num_versions=num_versions)
 
         # --- Assertions ---
-        self.assertEqual(result, expected_thread)
+        self.assertEqual(result, expected_threads)
         mock_openai_class.assert_called_once_with(api_key="fake_api_key")
+        expected_user_prompt = f"Please generate {num_versions} different thread versions for the following text:\n\n{text_to_split}"
         mock_client.chat.completions.create.assert_called_once_with(
             model=AI_MODEL,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": text_to_split},
+                {"role": "user", "content": expected_user_prompt},
             ],
             temperature=0.7,
             response_format={"type": "json_object"},
@@ -46,27 +47,35 @@ class TestAiSplitter(unittest.TestCase):
     @patch("ai_splitter.openai.OpenAI")
     def test_split_thread_invalid_json(self, mock_openai_class, mock_load_key):
         """Test that a RuntimeError is raised if the AI returns invalid JSON."""
-        # --- Mocks Setup ---
         mock_client = mock_openai_class.return_value
         mock_response = MagicMock()
         mock_response.choices[0].message.content = "This is not JSON"
         mock_client.chat.completions.create.return_value = mock_response
 
-        # --- Assertions ---
         with self.assertRaisesRegex(RuntimeError, "The AI returned an invalid JSON format."):
             split_thread_with_ai("Some text")
 
     @patch("ai_splitter.load_openai_key", return_value="fake_api_key")
     @patch("ai_splitter.openai.OpenAI")
-    def test_split_thread_malformed_json_structure(self, mock_openai_class, mock_load_key):
-        """Test that a RuntimeError is raised if the JSON is missing the 'thread' key."""
-        # --- Mocks Setup ---
+    def test_split_thread_missing_threads_key(self, mock_openai_class, mock_load_key):
+        """Test that a RuntimeError is raised if the JSON is missing the 'threads' key."""
         mock_client = mock_openai_class.return_value
         mock_response = MagicMock()
-        # Valid JSON, but wrong structure
-        mock_response.choices[0].message.content = json.dumps({"tweets": ["Tweet 1"]})
+        mock_response.choices[0].message.content = json.dumps({"thread": ["Old format"]})
         mock_client.chat.completions.create.return_value = mock_response
 
-        # --- Assertions ---
-        with self.assertRaisesRegex(RuntimeError, "AI response is not a valid JSON array of strings."):
+        with self.assertRaisesRegex(RuntimeError, "AI response JSON is not a list"):
+            split_thread_with_ai("Some text")
+
+    @patch("ai_splitter.load_openai_key", return_value="fake_api_key")
+    @patch("ai_splitter.openai.OpenAI")
+    def test_split_thread_malformed_inner_structure(self, mock_openai_class, mock_load_key):
+        """Test that a RuntimeError is raised if the inner structure is not a list of strings."""
+        mock_client = mock_openai_class.return_value
+        mock_response = MagicMock()
+        # Valid JSON, but inner structure is not a list of lists of strings
+        mock_response.choices[0].message.content = json.dumps({"threads": [["A good thread"], "not a thread"]})
+        mock_client.chat.completions.create.return_value = mock_response
+
+        with self.assertRaisesRegex(RuntimeError, "AI response is not a valid JSON array of string arrays."):
             split_thread_with_ai("Some text")
