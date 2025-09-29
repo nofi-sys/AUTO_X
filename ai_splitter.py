@@ -91,7 +91,6 @@ def split_thread_with_ai(
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
             ],
-            temperature=0.7,
             response_format={"type": "json_object"},
         )
         logger.info("Successfully received response from OpenAI API.")
