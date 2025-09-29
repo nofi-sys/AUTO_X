@@ -509,9 +509,65 @@ class ThreadComposer(tk.Tk):
             side="left", padx=4
         )
 
-        # Dynamic container for tweet previews & image selectors
-        self.tweets_frame = ttk.Frame(self)
-        self.tweets_frame.pack(fill="both", expand=True, padx=6, pady=6)
+        # --- Scrollable Frame for Tweets ---
+        # Create a container for the canvas and scrollbar
+        scroll_container = ttk.Frame(self)
+        scroll_container.pack(fill="both", expand=True, padx=6, pady=6)
+        scroll_container.grid_rowconfigure(0, weight=1)
+        scroll_container.grid_columnconfigure(0, weight=1)
+
+        # Create the canvas and scrollbar
+        canvas = tk.Canvas(scroll_container)
+        scrollbar = ttk.Scrollbar(scroll_container, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        # This is the frame that will contain the tweet editor widgets
+        self.tweets_frame = ttk.Frame(canvas)
+
+        # Place the tweets_frame inside the canvas
+        tweet_frame_id = canvas.create_window((0, 0), window=self.tweets_frame, anchor="nw")
+
+        # Pack the canvas and scrollbar
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+
+        # --- Event Bindings for Scrolling and Resizing ---
+
+        # 1. Update the inner frame's width to match the canvas
+        def _configure_inner_frame(event: tk.Event) -> None:
+            canvas.itemconfig(tweet_frame_id, width=event.width)
+
+        canvas.bind("<Configure>", _configure_inner_frame)
+
+        # 2. Update the scroll region when the content frame's size changes
+        def _configure_scroll_region(event: tk.Event) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        self.tweets_frame.bind("<Configure>", _configure_scroll_region)
+
+        # 3. Mouse wheel scrolling (cross-platform)
+        def _on_mousewheel(event: tk.Event) -> None:
+            # The logic handles different event properties on different OSes
+            if hasattr(event, "delta") and event.delta != 0:  # Windows/macOS
+                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            elif hasattr(event, "num") and event.num in (4, 5):  # Linux
+                direction = -1 if event.num == 4 else 1
+                canvas.yview_scroll(direction, "units")
+
+        # Bind/unbind scrolling when the mouse enters/leaves the canvas
+        def _bind_scrolling(event: tk.Event) -> None:
+            # Use bind_all to catch the event even if a child widget has focus
+            self.bind_all("<MouseWheel>", _on_mousewheel)
+            self.bind_all("<Button-4>", _on_mousewheel)
+            self.bind_all("<Button-5>", _on_mousewheel)
+
+        def _unbind_scrolling(event: tk.Event) -> None:
+            self.unbind_all("<MouseWheel>")
+            self.unbind_all("<Button-4>")
+            self.unbind_all("<Button-5>")
+
+        canvas.bind("<Enter>", _bind_scrolling)
+        canvas.bind("<Leave>", _unbind_scrolling)
 
         # --- Action Buttons ---
         action_frame = ttk.Frame(self)
