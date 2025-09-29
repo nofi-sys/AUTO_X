@@ -396,9 +396,14 @@ class ThreadComposer(tk.Tk):
         auth_url = oauth2_handler.get_authorization_url()
         webbrowser.open(auth_url)
 
+        prompt_message = (
+            "Step 1: Authorize the app in the browser window that just opened.\n\n"
+            "Step 2: After authorizing, you'll be redirected to a new page (it might look like an error page). Copy the full URL from your browser's address bar.\n\n"
+            "Step 3: Paste the entire URL (starting with 'http://localhost') into the box below:"
+        )
         callback_url = simpledialog.askstring(
-            "Authenticate",
-            "After authorizing in your browser, paste the full URL you were redirected to:",
+            "Complete Authentication (3 Steps)",
+            prompt_message,
             parent=self,
         )
 
