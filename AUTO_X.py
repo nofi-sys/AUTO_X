@@ -388,7 +388,7 @@ class ThreadComposer(tk.Tk):
 
         oauth2_handler = tweepy.OAuth2UserHandler(
             client_id=creds.client_id,
-            redirect_uri="https://127.0.0.1:3000/callback",
+            redirect_uri="http://localhost",
             scope=["tweet.read", "tweet.write", "users.read", "offline.access"],
             client_secret=creds.client_secret,
         )
@@ -413,8 +413,19 @@ class ThreadComposer(tk.Tk):
             messagebox.showinfo("Success", "Authentication successful!", parent=self)
             return True
         except Exception as e:
+            error_detail = str(e)
+            if "invalid_grant" in error_detail.lower():
+                error_message = (
+                    "Authentication failed: Invalid Grant.\n\n"
+                    "This usually means the callback URL you pasted is incorrect, has expired, or was already used. "
+                    "Please try the authentication process again from the beginning."
+                )
+            else:
+                error_message = "An unexpected error occurred during authentication."
+
+            full_error = f"{error_message}\n\nTechnical Details: {error_detail}"
             logging.exception("Failed to authenticate with Twitter")
-            messagebox.showerror("Authentication Failed", f"An error occurred: {e}", parent=self)
+            messagebox.showerror("Authentication Failed", full_error, parent=self)
             return False
 
     def _get_refreshed_client(self) -> Optional[tweepy.Client]:
@@ -443,11 +454,19 @@ class ThreadComposer(tk.Tk):
                 oauth2_handler.token = new_token
                 logging.info("Token refreshed and saved successfully.")
             except Exception as e:
+                error_detail = str(e)
+                if "invalid_grant" in error_detail.lower():
+                    error_message = (
+                        "Your session expired and could not be refreshed because the grant is invalid. "
+                        "This can happen if you revoke access to the app from your Twitter account settings."
+                    )
+                else:
+                    error_message = "An unexpected error occurred while refreshing your session."
+
+                full_error = f"{error_message}\n\nPlease authenticate again.\n\nTechnical Details: {error_detail}"
                 logging.error(f"Error refreshing token: {e}")
                 save_oauth2_token({})  # Clear bad token
-                messagebox.showerror(
-                    "Authentication Error", "Your session expired and could not be refreshed. Please authenticate again."
-                )
+                messagebox.showerror("Authentication Error", full_error, parent=self)
                 return None
 
         return tweepy.Client(oauth2_handler.token["access_token"])
