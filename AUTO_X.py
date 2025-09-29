@@ -46,10 +46,8 @@ class CredentialsDialog(tk.Toplevel):
         self._create_buttons()
 
         # ─── Dialog Behavior ──────────────────────────────────────────────────
-        _center_window(self)
         self.protocol("WM_DELETE_WINDOW", self._cancel)
         self.grab_set()
-        self.wait_window(self)
 
     def _create_widgets(self, master: ttk.Frame) -> ttk.Widget:
         """Create the input fields for the credentials."""
@@ -111,11 +109,8 @@ class LoadThreadDialog(tk.Toplevel):
         self._create_widgets(body)
         body.pack(padx=20, pady=20, expand=True, fill="both")
 
-        _center_window(self)
-
         self.protocol("WM_DELETE_WINDOW", self._cancel)
         self.grab_set()
-        self.wait_window(self)
 
     def _create_widgets(self, master: ttk.Frame) -> None:
         """Create the tabbed view for thread selection."""
@@ -171,10 +166,8 @@ class AddPromoDialog(tk.Toplevel):
         body.pack(padx=20, pady=20)
 
         # --- Dialog Behavior ---
-        _center_window(self)
         self.protocol("WM_DELETE_WINDOW", self._cancel)
         self.grab_set()
-        self.wait_window(self)
 
     def _create_widgets(self, master: ttk.Frame) -> None:
         """Create the input fields for the new promotion."""
@@ -240,10 +233,8 @@ class SelectPromoDialog(tk.Toplevel):
         body.pack(padx=20, pady=20, expand=True, fill="both")
 
         # --- Dialog Behavior ---
-        _center_window(self)
         self.protocol("WM_DELETE_WINDOW", self._cancel)
         self.grab_set()
-        self.wait_window(self)
 
     def _create_widgets(self, master: ttk.Frame) -> None:
         """Create the listbox and buttons for promo selection."""
@@ -298,9 +289,7 @@ class PromoManagerDialog(tk.Toplevel):
         body.pack(padx=20, pady=20, expand=True, fill="both")
 
         # --- Dialog Behavior ---
-        _center_window(self)
         self.grab_set()
-        self.wait_window(self)
 
     def _create_widgets(self, master: ttk.Frame) -> None:
         """Create the widgets for managing promotions."""
@@ -339,6 +328,7 @@ class PromoManagerDialog(tk.Toplevel):
         """Handle adding a new promotion."""
         dialog = AddPromoDialog(self)
         _center_window(dialog)
+        self.wait_window(dialog)
         if dialog.result:
             text, image_path = dialog.result
             try:
@@ -420,6 +410,8 @@ class ThreadComposer(tk.Tk):
         file and reloaded.
         """
         dialog = CredentialsDialog(self)
+        _center_window(dialog)
+        self.wait_window(dialog)
         result = dialog.result
         if result:
             keys = ("TWITTER_API_KEY", "TWITTER_API_SECRET", "TWITTER_ACCESS_TOKEN", "TWITTER_ACCESS_SECRET")
@@ -446,6 +438,8 @@ class ThreadComposer(tk.Tk):
     def _open_promo_manager(self) -> None:
         """Open the dialog to manage promotional tweets."""
         dialog = PromoManagerDialog(self)
+        _center_window(dialog)
+        self.wait_window(dialog)
 
     # ───────────────────────────────────────────────────── GUI CONSTRUCTION ────
     def _build_widgets(self) -> None:
@@ -548,6 +542,8 @@ class ThreadComposer(tk.Tk):
                 raise TypeError("JSON file is not in the expected format.")
 
             dialog = LoadThreadDialog(self, threads)
+            _center_window(dialog)
+            self.wait_window(dialog)  # Wait until the dialog is closed
             selected_thread = dialog.result
 
             if selected_thread:
@@ -580,6 +576,8 @@ class ThreadComposer(tk.Tk):
             return
 
         dialog = SelectPromoDialog(self)
+        _center_window(dialog)
+        self.wait_window(dialog)
         if dialog.result:
             promo = dialog.result
             self.tweets.append(promo["text"])
