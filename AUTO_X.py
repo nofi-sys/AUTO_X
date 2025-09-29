@@ -474,7 +474,7 @@ class ThreadComposer(tk.Tk):
         model_lang_frame.pack(fill="x", expand=True)
 
         ttk.Label(model_lang_frame, text="AI Model:").pack(side="left", padx=(0, 5))
-        self.ai_model_var = tk.StringVar(value="gpt-4o")
+        self.ai_model_var = tk.StringVar(value="gpt-5")
         self.ai_model_menu = ttk.Combobox(
             model_lang_frame,
             textvariable=self.ai_model_var,
