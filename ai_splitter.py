@@ -14,40 +14,51 @@ logger = logging.getLogger(__name__)
 AI_MODEL = "gpt-4o-mini"
 
 SYSTEM_PROMPT = """
-You are an expert social media manager. Your task is to take a piece of text and generate multiple, distinct, and compelling thread options for X (formerly Twitter).
+You are an expert social media manager specializing in creating engaging content for X (formerly Twitter). Your primary task is to parse a long text and generate multiple, distinct, and compelling thread options.
 
-Follow these rules strictly:
-1.  Generate the exact number of thread versions requested by the user.
-2.  Each tweet within a thread must be under 280 characters.
-3.  Preserve all original emojis and the overall tone of the text.
-4.  Number the tweets in the format "1/n", "2/n", etc., at the end of each tweet, where 'n' is the total number of tweets in that specific thread.
-5.  The output MUST be a valid JSON object with a single key "threads" which contains an array of arrays. Each inner array represents one complete thread.
+**Key Objective:** The user wants different threads that can be posted on different days without being redundant. If the source text covers multiple topics, each generated thread should focus on one of those topics. If the text covers one topic, each thread should explore a different angle or perspective of that topic.
 
-Example Input Text:
-"User wants 2 versions of the following text: Python is a versatile language. You can use it for web development, data science, and automation. It's great for beginners and experts alike."
+**Strict Rules:**
+1.  **Generate Distinct Threads:** Create the exact number of thread versions requested. Each thread must be unique and not just a rephrasing of the others.
+2.  **Character Limit:** Every tweet must be under 280 characters.
+3.  **Preserve Tone:** Maintain the original emojis and the overall tone of the source text.
+4.  **Numbering:** Append a counter (e.g., "1/n", "2/n") at the end of each tweet, where 'n' is the total number of tweets in that specific thread.
+5.  **Language:** Generate the threads in the specified language.
+6.  **JSON Output:** The final output MUST be a valid JSON object with a single key "threads". This key must contain an array of arrays, where each inner array represents a complete, ordered thread.
 
-Example Output JSON:
+**Example Scenario:**
+*   **User Request:** Generate 2 threads in English from a long text about the benefits of both coffee and tea.
+*   **Correct Output:** One thread focuses entirely on the benefits of coffee, and the second thread focuses entirely on the benefits of tea.
+*   **Incorrect Output:** Two slightly different threads that both discuss coffee and tea.
+
+**Example JSON Output Structure:**
 {
   "threads": [
-    [
-      "Python is a versatile language, ideal for web dev, data science, & automation. It’s a top choice for both new and seasoned developers. 1/2",
-      "With vast libraries and strong community support, Python empowers you to build anything from a simple script to a complex AI model. 2/2"
+    [ // First thread
+      "Tweet 1 of thread 1... 1/3",
+      "Tweet 2 of thread 1... 2/3",
+      "Tweet 3 of thread 1... 3/3"
     ],
-    [
-      "Discover the power of Python! A versatile language perfect for web development, data science, and automating tasks. 1/2",
-      "Whether you're a beginner or an expert, Python's simplicity and robust ecosystem make it the ideal tool for your next project. 2/2"
+    [ // Second thread
+      "Tweet 1 of thread 2... 1/2",
+      "Tweet 2 of thread 2... 2/2"
     ]
   ]
 }
 """
 
 
-def split_thread_with_ai(text: str, num_versions: int = 3) -> List[List[str]]:
+def split_thread_with_ai(
+    text: str, model: str, language: str, extra_instructions: str, num_versions: int = 3
+) -> List[List[str]]:
     """
     Uses OpenAI's chat model to split a long text into multiple Twitter thread versions.
 
     Args:
         text: The full text to be split into a thread.
+        model: The AI model to use (e.g., "gpt-4o", "gpt-4o-mini").
+        language: The target language for the threads.
+        extra_instructions: Additional user-provided instructions for the AI.
         num_versions: The number of different thread versions to generate.
 
     Returns:
@@ -62,12 +73,20 @@ def split_thread_with_ai(text: str, num_versions: int = 3) -> List[List[str]]:
         raise ValueError("OpenAI API key not found. Please set OPENAI_API_KEY in your .env file.")
 
     client = openai.OpenAI(api_key=api_key)
-    user_prompt = f"Please generate {num_versions} different thread versions for the following text:\n\n{text}"
+
+    # Construct a more detailed user prompt
+    user_prompt = (
+        f"Please generate {num_versions} different and distinct thread versions in {language} "
+        f"for the following text. Each version should explore a different angle or aspect of the text.\n\n"
+        f"Original Text:\n\"\"\"\n{text}\n\"\"\"\n"
+    )
+    if extra_instructions:
+        user_prompt += f"\nFollow these additional instructions carefully: {extra_instructions}"
 
     try:
-        logger.info("Calling OpenAI API with model %s to generate %d thread versions...", AI_MODEL, num_versions)
+        logger.info("Calling OpenAI API with model %s to generate %d thread versions...", model, num_versions)
         response = client.chat.completions.create(
-            model=AI_MODEL,
+            model=model,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},

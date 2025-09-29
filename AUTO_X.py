@@ -1,9 +1,11 @@
 """Tkinter GUI for composing X (Twitter) threads."""
 
+import json
 import logging
 import os
+import shutil
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, scrolledtext
+from tkinter import ttk, filedialog, messagebox, scrolledtext, simpledialog
 from typing import List, Optional
 
 from dotenv import load_dotenv
@@ -93,48 +95,47 @@ class CredentialsDialog(tk.Toplevel):
 MAX_TWEET_LEN = 280  # Twitter/X character limit
 
 
-class ThreadSelectionDialog(tk.Toplevel):
-    """Dialog for selecting one of multiple AI-generated thread versions."""
+class LoadThreadDialog(tk.Toplevel):
+    """Dialog for selecting a thread from a loaded file."""
 
     def __init__(self, parent: tk.Tk, threads: List[List[str]]) -> None:  # noqa: D107
         super().__init__(parent)
         self.transient(parent)
-        self.title("Select an AI-Generated Thread")
+        self.title("Select a Thread to Load")
         self.parent = parent
         self.threads = threads
         self.result: Optional[List[str]] = None
 
-        # ─── Widgets ──────────────────────────────────────────────────────────
         body = ttk.Frame(self)
         self._create_widgets(body)
         body.pack(padx=20, pady=20, expand=True, fill="both")
 
-        # ─── Dialog Behavior ──────────────────────────────────────────────────
         self.protocol("WM_DELETE_WINDOW", self._cancel)
         self.grab_set()
         self.wait_window(self)
 
     def _create_widgets(self, master: ttk.Frame) -> None:
         """Create the tabbed view for thread selection."""
-        ttk.Label(master, text="Select the thread version you want to use:").pack(pady=(0, 10))
+        ttk.Label(master, text="Select the thread you want to edit and post:").pack(pady=(0, 10))
 
         notebook = ttk.Notebook(master)
         notebook.pack(pady=5, padx=5, expand=True, fill="both")
 
         for i, thread in enumerate(self.threads):
             frame = ttk.Frame(notebook, padding=10)
-            notebook.add(frame, text=f"Version {i + 1}")
+            notebook.add(frame, text=f"Thread {i + 1}")
 
             text_area = scrolledtext.ScrolledText(frame, wrap=tk.WORD, height=15, width=80)
-            full_thread_text = "\n\n".join(thread)
+            full_thread_text = "\n\n---\n\n".join(thread)
             text_area.insert(tk.END, full_thread_text)
             text_area.configure(state="disabled")
             text_area.pack(expand=True, fill="both")
 
-        # --- Buttons ---
         btn_frame = ttk.Frame(master)
         btn_frame.pack(pady=(10, 0))
-        select_btn = ttk.Button(btn_frame, text="Select this Thread", command=lambda: self._select(notebook.index(notebook.select())))
+        select_btn = ttk.Button(
+            btn_frame, text="Load Selected Thread", command=lambda: self._select(notebook.index(notebook.select()))
+        )
         cancel_btn = ttk.Button(btn_frame, text="Cancel", command=self._cancel)
         select_btn.pack(side="left", padx=10)
         cancel_btn.pack(side="right", padx=10)
@@ -393,6 +394,7 @@ class ThreadComposer(tk.Tk):
         self.images: List[Optional[str]] = []
         self.char_count_labels: List[ttk.Label] = []
         self.image_path_labels: List[ttk.Label] = []
+        self.opened_thread_file_path: Optional[str] = None
 
         # Style for validation labels
         self.style = ttk.Style(self)
@@ -447,6 +449,11 @@ class ThreadComposer(tk.Tk):
         # ─── Menu Bar ─────────────────────────────────────────────────────────
         menubar = tk.Menu(self)
         self.config(menu=menubar)
+
+        file_menu = tk.Menu(menubar, tearoff=0)
+        file_menu.add_command(label="Open Thread File...", command=self._open_thread_file_handler)
+        menubar.add_cascade(label="File", menu=file_menu)
+
         settings_menu = tk.Menu(menubar, tearoff=0)
         settings_menu.add_command(label="Configure Credentials...", command=self._configure_credentials)
         settings_menu.add_command(label="Manage Promotions...", command=self._open_promo_manager)
@@ -458,9 +465,51 @@ class ThreadComposer(tk.Tk):
         self.input_box = scrolledtext.ScrolledText(self, height=10, wrap=tk.WORD)
         self.input_box.pack(fill="x", padx=6, pady=6)
 
-        ttk.Button(self, text="↳ Parse into Tweets", command=self._parse_handler).pack(pady=(0, 4))
-        ttk.Button(self, text="🡆 Parse Plain-Thread", command=self._parse_plain_handler).pack(pady=(0, 4))
-        ttk.Button(self, text="✨ Generate with AI", command=self._parse_with_ai_handler).pack(pady=(0, 8))
+        # --- AI Generation Controls ---
+        ai_controls_frame = ttk.LabelFrame(self, text="AI Generation Settings", padding=10)
+        ai_controls_frame.pack(fill="x", padx=6, pady=4)
+
+        # Model and Language selection
+        model_lang_frame = ttk.Frame(ai_controls_frame)
+        model_lang_frame.pack(fill="x", expand=True)
+
+        ttk.Label(model_lang_frame, text="AI Model:").pack(side="left", padx=(0, 5))
+        self.ai_model_var = tk.StringVar(value="gpt-4o")
+        self.ai_model_menu = ttk.Combobox(
+            model_lang_frame,
+            textvariable=self.ai_model_var,
+            values=["gpt-4o", "gpt-4o-mini"],
+            state="readonly",
+            width=15,
+        )
+        self.ai_model_menu.pack(side="left", padx=5)
+
+        ttk.Label(model_lang_frame, text="Language:").pack(side="left", padx=(20, 5))
+        self.language_var = tk.StringVar(value="English")
+        self.language_menu = ttk.Combobox(
+            model_lang_frame,
+            textvariable=self.language_var,
+            values=["English", "Spanish", "Other..."],
+            width=15,
+        )
+        self.language_menu.pack(side="left", padx=5)
+        self.language_menu.bind("<<ComboboxSelected>>", self._handle_language_selection)
+
+        # Extra instructions
+        ttk.Label(ai_controls_frame, text="Extra Instructions for AI:").pack(anchor="w", pady=(10, 2))
+        self.extra_instructions_box = scrolledtext.ScrolledText(ai_controls_frame, height=3, wrap=tk.WORD)
+        self.extra_instructions_box.pack(fill="x", expand=True, pady=(0, 5))
+
+        # --- Action Buttons ---
+        button_frame = ttk.Frame(self)
+        button_frame.pack(pady=(0, 8))
+        ttk.Button(button_frame, text="↳ Parse into Tweets", command=self._parse_handler).pack(side="left", padx=4)
+        ttk.Button(button_frame, text="🡆 Parse Plain-Thread", command=self._parse_plain_handler).pack(
+            side="left", padx=4
+        )
+        ttk.Button(button_frame, text="✨ Generate with AI", command=self._parse_with_ai_handler).pack(
+            side="left", padx=4
+        )
 
         # Dynamic container for tweet previews & image selectors
         self.tweets_frame = ttk.Frame(self)
@@ -476,6 +525,51 @@ class ThreadComposer(tk.Tk):
         self.publish_btn.pack(side="left", padx=10)
 
     # ───────────────────────────────────────────────────── EVENT HANDLERS ────
+    def _open_thread_file_handler(self) -> None:
+        """Open a JSON file containing threads, and let the user select one to load."""
+        file_path = filedialog.askopenfilename(
+            title="Open Thread File",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+            parent=self,
+        )
+        if not file_path:
+            return
+
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            threads = data.get("threads")
+            if not isinstance(threads, list) or not all(isinstance(t, list) for t in threads):
+                raise TypeError("JSON file is not in the expected format.")
+
+            dialog = LoadThreadDialog(self, threads)
+            _center_window(dialog)
+            selected_thread = dialog.result
+
+            if selected_thread:
+                self.opened_thread_file_path = file_path  # Save path for later
+                self._render_tweets(selected_thread)
+                messagebox.showinfo("Thread Loaded", "The selected thread has been loaded into the editor.", parent=self)
+
+        except (IOError, json.JSONDecodeError, TypeError) as e:
+            messagebox.showerror("Error Loading File", f"Failed to load or parse the thread file:\n{e}", parent=self)
+            self.opened_thread_file_path = None
+
+    def _handle_language_selection(self, event: tk.Event) -> None:
+        """Handle the language selection combobox."""
+        if self.language_var.get() == "Other...":
+            custom_language = simpledialog.askstring("Language", "Enter the language:", parent=self)
+            if custom_language:
+                # Add to the list of options if not already present
+                current_values = list(self.language_menu["values"])
+                if custom_language not in current_values:
+                    self.language_menu["values"] = current_values[:-1] + [custom_language, "Other..."]
+                self.language_var.set(custom_language)
+            else:
+                # If user cancels, revert to the first option
+                self.language_var.set("English")
+
     def _add_promo_tweet_handler(self) -> None:
         """Open a dialog to select and append a promotional tweet."""
         if not self.tweets:
@@ -539,21 +633,51 @@ class ThreadComposer(tk.Tk):
         self.update_idletasks()
 
         try:
-            # Generate multiple thread versions (e.g., 3)
-            threads = split_thread_with_ai(raw, num_versions=3)
+            # Get AI generation parameters from the UI
+            model = self.ai_model_var.get()
+            language = self.language_var.get()
+            extra_instructions = self.extra_instructions_box.get("1.0", tk.END).strip()
+
+            # Generate multiple thread versions
+            threads = split_thread_with_ai(
+                text=raw,
+                model=model,
+                language=language,
+                extra_instructions=extra_instructions,
+                num_versions=3,
+            )
             logging.info("Generated %d thread versions with AI", len(threads))
 
             if not threads:
-                messagebox.showerror("AI Error", "The AI returned no threads.")
+                messagebox.showerror("AI Error", "The AI returned no threads.", parent=self)
                 return
 
-            # Open the selection dialog
-            dialog = ThreadSelectionDialog(self, threads)
-            _center_window(dialog)
-            selected_thread = dialog.result
+            # Prompt the user to save the generated threads to a file
+            file_path = filedialog.asksaveasfilename(
+                title="Save Generated Threads",
+                defaultextension=".json",
+                filetypes=[("JSON files", "*.json")],
+                parent=self,
+            )
 
-            if selected_thread:
-                self._render_tweets(selected_thread)
+            if not file_path:
+                # User cancelled the save dialog
+                messagebox.showinfo("Cancelled", "AI generation was successful, but the threads were not saved.", parent=self)
+                return
+
+            try:
+                # The AI returns a list of threads. We'll save it in a JSON object
+                # under a 'threads' key for clarity and future-proofing.
+                data_to_save = {"threads": threads}
+                with open(file_path, "w", encoding="utf-8") as f:
+                    json.dump(data_to_save, f, indent=2, ensure_ascii=False)
+                messagebox.showinfo(
+                    "Success",
+                    f"Successfully saved {len(threads)} generated threads to:\n{file_path}",
+                    parent=self,
+                )
+            except IOError as e:
+                messagebox.showerror("Save Error", f"Failed to save file: {e}", parent=self)
 
         except (ValueError, RuntimeError) as exc:
             logging.exception("Failed to generate thread with AI")
@@ -582,8 +706,8 @@ class ThreadComposer(tk.Tk):
             text_frame.pack(side="left", fill="x", expand=True)
             preview = tk.Text(text_frame, height=min(6, (len(txt) // 50) + 1), width=70, wrap=tk.WORD)
             preview.insert("1.0", txt)
-            preview.configure(state="disabled", background="#F7F7F7")
             preview.pack(side="top", fill="x", expand=True)
+            preview.bind("<KeyRelease>", lambda event, i=idx: self._on_tweet_edited(event, i))
 
             # --- Controls & Indicators ---
             controls_frame = ttk.Frame(row)
@@ -614,6 +738,17 @@ class ThreadComposer(tk.Tk):
                 label.config(style="Valid.TLabel")
 
         self.publish_btn.config(state="normal" if all_valid else "disabled")
+
+    def _on_tweet_edited(self, event: tk.Event, index: int) -> None:
+        """Handle text changes in a tweet's text box."""
+        if not isinstance(event.widget, tk.Text):
+            return
+        # Get the full content of the text box
+        new_text = event.widget.get("1.0", tk.END).strip()
+        # Update the internal state
+        self.tweets[index] = new_text
+        # Re-validate to update character count and publish button state
+        self._validate_tweets()
 
     def _image_handler(self, index: int) -> None:
         """Prompt the user for an image and attach it to the given tweet."""
@@ -650,11 +785,45 @@ class ThreadComposer(tk.Tk):
             self.update_idletasks()
             publish_thread(self.tweets, self.images, creds)
             messagebox.showinfo("Success", "Thread published successfully!", parent=self)
+
+            # Move the source file to "enviados" subfolder if it exists
+            if self.opened_thread_file_path:
+                self._archive_sent_thread_file()
+
         except Exception as exc:
             logging.exception("Failed to publish thread")
             messagebox.showerror("Error while publishing", str(exc), parent=self)
         finally:
             self.config(cursor="")
+
+    def _archive_sent_thread_file(self) -> None:
+        """Move the successfully posted thread's source file to an 'enviados' subfolder."""
+        if not self.opened_thread_file_path:
+            return
+
+        try:
+            source_path = self.opened_thread_file_path
+            directory = os.path.dirname(source_path)
+            filename = os.path.basename(source_path)
+
+            archive_dir = os.path.join(directory, "enviados")
+            os.makedirs(archive_dir, exist_ok=True)
+
+            destination_path = os.path.join(archive_dir, filename)
+            shutil.move(source_path, destination_path)
+
+            logging.info(f"Archived sent thread file to {destination_path}")
+            messagebox.showinfo(
+                "File Archived",
+                f"The source file has been moved to the 'enviados' subfolder.",
+                parent=self,
+            )
+        except (IOError, OSError) as e:
+            logging.exception(f"Could not archive sent thread file: {self.opened_thread_file_path}")
+            messagebox.showerror("Archive Error", f"Could not move the source file:\n{e}", parent=self)
+        finally:
+            # Reset the path regardless of success to prevent re-archiving
+            self.opened_thread_file_path = None
 
 
 if __name__ == "__main__":
