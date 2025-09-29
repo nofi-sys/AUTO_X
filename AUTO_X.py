@@ -224,7 +224,7 @@ class SelectPromoDialog(tk.Toplevel):
         self.transient(parent)
         self.title("Select Promotional Tweet")
         self.parent = parent
-        self.promos = get_all_promos()
+        self.promos: List[dict] = []  # Will be populated by _refresh_promo_list
         self.result: Optional[dict] = None
 
         # --- Widgets ---
@@ -246,17 +246,42 @@ class SelectPromoDialog(tk.Toplevel):
         self.promo_listbox = tk.Listbox(list_frame, height=10, width=80)
         self.promo_listbox.pack(side="left", expand=True, fill="both")
 
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.promo_listbox.yview)
+        scrollbar.pack(side="right", fill="y")
+        self.promo_listbox.config(yscrollcommand=scrollbar.set)
+
+        self._refresh_promo_list()
+
+        # --- Buttons ---
+        btn_frame = ttk.Frame(master)
+        btn_frame.pack(pady=(10, 0))
+        ttk.Button(btn_frame, text="Select", command=self._select).pack(side="left", padx=10)
+        ttk.Button(btn_frame, text="Add New...", command=self._add_promo_handler).pack(side="left", padx=5)
+        ttk.Button(btn_frame, text="Cancel", command=self._cancel).pack(side="right", padx=10)
+
+    def _refresh_promo_list(self) -> None:
+        """Clear and reload the list of promotions from the library."""
+        self.promo_listbox.delete(0, tk.END)
+        self.promos = get_all_promos()
         for promo in self.promos:
             has_image = promo.get("image_path")
             image_info = f"[Image: {os.path.basename(has_image)}]" if has_image else "[No Image]"
             display_text = f"{promo.get('text', '')[:80]}... - {image_info}"
             self.promo_listbox.insert(tk.END, display_text)
 
-        # --- Buttons ---
-        btn_frame = ttk.Frame(master)
-        btn_frame.pack(pady=(10, 0))
-        ttk.Button(btn_frame, text="Select", command=self._select).pack(side="left", padx=10)
-        ttk.Button(btn_frame, text="Cancel", command=self._cancel).pack(side="right", padx=10)
+    def _add_promo_handler(self) -> None:
+        """Handle adding a new promotion."""
+        dialog = AddPromoDialog(self)
+        _center_window(dialog)
+        self.wait_window(dialog)
+        if dialog.result:
+            text, image_path = dialog.result
+            try:
+                add_promo(text, image_path)
+                self._refresh_promo_list()
+                messagebox.showinfo("Success", "Promotional tweet added.", parent=self)
+            except ValueError as e:
+                messagebox.showerror("Error", str(e), parent=self)
 
     def _select(self) -> None:
         """Set the selected promotion as the result and close."""
