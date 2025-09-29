@@ -478,7 +478,7 @@ class ThreadComposer(tk.Tk):
         self.ai_model_menu = ttk.Combobox(
             model_lang_frame,
             textvariable=self.ai_model_var,
-            values=["gpt-4o", "gpt-4o-mini"],
+            values=["gpt-5", "gpt-5-mini"],
             state="readonly",
             width=15,
         )
@@ -489,8 +489,8 @@ class ThreadComposer(tk.Tk):
         self.language_menu = ttk.Combobox(
             model_lang_frame,
             textvariable=self.language_var,
-            values=["English", "Spanish", "Other..."],
-            width=15,
+            values=["English", "Español Rioplatense Argentino", "Other..."],
+            width=25,
         )
         self.language_menu.pack(side="left", padx=5)
         self.language_menu.bind("<<ComboboxSelected>>", self._handle_language_selection)
