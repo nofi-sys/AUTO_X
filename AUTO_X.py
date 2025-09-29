@@ -11,7 +11,14 @@ from typing import List, Optional
 from dotenv import load_dotenv
 
 from ai_splitter import split_thread_with_ai
-from config import load_twitter_credentials
+import webbrowser
+import time
+import tweepy
+from config import (
+    load_twitter_oauth2_credentials,
+    save_oauth2_token,
+    load_oauth2_token,
+)
 from plain_thread import parse_plain_thread
 from promo_library import add_promo, delete_promo, get_all_promos
 from twitter_api import publish_thread
@@ -29,69 +36,7 @@ def _center_window(win: tk.Toplevel) -> None:
     win.geometry(f"{width}x{height}+{x}+{y}")
 
 
-class CredentialsDialog(tk.Toplevel):
-    """Dialog for entering and saving Twitter API credentials."""
-
-    def __init__(self, parent: tk.Tk) -> None:  # noqa: D107
-        super().__init__(parent)
-        self.transient(parent)
-        self.title("Enter Credentials")
-        self.parent = parent
-        self.result: Optional[List[str]] = None
-
-        # ─── Widgets ──────────────────────────────────────────────────────────
-        body = ttk.Frame(self)
-        self.initial_focus = self._create_widgets(body)
-        body.pack(padx=20, pady=20)
-        self._create_buttons()
-
-        # ─── Dialog Behavior ──────────────────────────────────────────────────
-        self.protocol("WM_DELETE_WINDOW", self._cancel)
-        self.grab_set()
-
-    def _create_widgets(self, master: ttk.Frame) -> ttk.Widget:
-        """Create the input fields for the credentials."""
-        ttk.Label(master, text="Enter your Twitter/X API credentials:").grid(row=0, columnspan=2, sticky="w")
-
-        labels = ("API Key", "API Secret", "Access Token", "Access Secret")
-        self.entries: List[ttk.Entry] = []
-        for i, label in enumerate(labels):
-            ttk.Label(master, text=f"{label}:").grid(row=i + 1, column=0, sticky="w", padx=5, pady=5)
-            entry = ttk.Entry(master, width=50)
-            entry.grid(row=i + 1, column=1, sticky="ew", padx=5, pady=5)
-            self.entries.append(entry)
-
-        return self.entries[0]
-
-    def _create_buttons(self) -> None:
-        """Create the 'Save' and 'Cancel' buttons."""
-        box = ttk.Frame(self)
-        save_btn = ttk.Button(box, text="Save", command=self._save, default=tk.ACTIVE)
-        cancel_btn = ttk.Button(box, text="Cancel", command=self._cancel)
-        save_btn.pack(side=tk.LEFT, padx=5, pady=10)
-        cancel_btn.pack(side=tk.RIGHT, padx=5, pady=10)
-        box.pack()
-
-    def _save(self, event: Optional[tk.Event] = None) -> None:
-        """Handle the 'Save' button click."""
-        self.result = [entry.get() for entry in self.entries]
-        if not all(self.result):
-            messagebox.showwarning("Missing fields", "All credential fields are required.", parent=self)
-            return
-
-        self.withdraw()
-        self.update_idletasks()
-        self.parent.focus_set()
-        self.destroy()
-
-    def _cancel(self, event: Optional[tk.Event] = None) -> None:
-        """Handle the 'Cancel' button click or window close."""
-        self.result = None
-        self.parent.focus_set()
-        self.destroy()
-
-
-MAX_TWEET_LEN = 280  # Twitter/X character limit
+MAX_TWEET_LEN = 280
 
 
 class LoadThreadDialog(tk.Toplevel):
@@ -416,6 +361,7 @@ class ThreadComposer(tk.Tk):
         self.char_count_labels: List[ttk.Label] = []
         self.image_path_labels: List[ttk.Label] = []
         self.opened_thread_file_path: Optional[str] = None
+        self.twitter_client: Optional[tweepy.Client] = None
 
         # Style for validation labels
         self.style = ttk.Style(self)
@@ -426,39 +372,96 @@ class ThreadComposer(tk.Tk):
         self._build_widgets()
 
         # Warn user on startup if credentials are not configured
-        self.after_idle(self._check_creds)
+        self.after_idle(self._check_and_init_auth)
 
-    def _configure_credentials(self) -> bool:
-        """Open a dialog for the user to enter their credentials.
+    def _authenticate_with_twitter(self) -> bool:
+        """Guide user through the OAuth 2.0 PKCE authentication flow."""
+        creds = load_twitter_oauth2_credentials()
+        if not creds.client_id:
+            messagebox.showerror(
+                "Configuration Error",
+                "TWITTER_CLIENT_ID is not set in the .env file.\n\n"
+                "Please get it from your Twitter Developer Portal and add it.",
+                parent=self,
+            )
+            return False
 
-        If the user saves, the credentials will be written to a local ``.env``
-        file and reloaded.
-        """
-        dialog = CredentialsDialog(self)
-        _center_window(dialog)
-        self.wait_window(dialog)
-        result = dialog.result
-        if result:
-            keys = ("TWITTER_API_KEY", "TWITTER_API_SECRET", "TWITTER_ACCESS_TOKEN", "TWITTER_ACCESS_SECRET")
-            with open(".env", "w") as f:
-                for key, value in zip(keys, result):
-                    f.write(f"{key}={value}\n")
-            load_dotenv()  # Reload .env to update current session
-            messagebox.showinfo("Success", "Credentials saved successfully.", parent=self)
+        oauth2_handler = tweepy.OAuth2UserHandler(
+            client_id=creds.client_id,
+            redirect_uri="https://127.0.0.1:3000/callback",
+            scope=["tweet.read", "tweet.write", "users.read", "offline.access"],
+            client_secret=creds.client_secret,
+        )
+
+        auth_url = oauth2_handler.get_authorization_url()
+        webbrowser.open(auth_url)
+
+        callback_url = simpledialog.askstring(
+            "Authenticate",
+            "After authorizing in your browser, paste the full URL you were redirected to:",
+            parent=self,
+        )
+
+        if not callback_url:
+            messagebox.showwarning("Authentication Cancelled", "The authentication process was cancelled.", parent=self)
+            return False
+
+        try:
+            token = oauth2_handler.fetch_token(callback_url)
+            save_oauth2_token(token)
+            self.twitter_client = tweepy.Client(token["access_token"])
+            messagebox.showinfo("Success", "Authentication successful!", parent=self)
             return True
-        return False
+        except Exception as e:
+            logging.exception("Failed to authenticate with Twitter")
+            messagebox.showerror("Authentication Failed", f"An error occurred: {e}", parent=self)
+            return False
 
-    def _check_creds(self) -> None:
-        """Check for credentials and prompt user if missing."""
-        creds = load_twitter_credentials()
-        if not all([creds.api_key, creds.api_secret, creds.access_token, creds.access_secret]):
+    def _get_refreshed_client(self) -> Optional[tweepy.Client]:
+        """Return a tweepy.Client, refreshing the token if necessary."""
+        token = load_oauth2_token()
+        if not token:
+            return None
+
+        creds = load_twitter_oauth2_credentials()
+        if not creds.client_id:
+            return None
+
+        oauth2_handler = tweepy.OAuth2UserHandler(
+            client_id=creds.client_id,
+            redirect_uri="https://127.0.0.1:3000/callback",
+            scope=["tweet.read", "tweet.write", "users.read", "offline.access"],
+            client_secret=creds.client_secret,
+        )
+        oauth2_handler.token = token
+
+        if token.get("expires_at", 0) < time.time() + 60:
+            try:
+                logging.info("Token expired, attempting to refresh...")
+                new_token = oauth2_handler.refresh_token("https://api.twitter.com/2/oauth2/token")
+                save_oauth2_token(new_token)
+                oauth2_handler.token = new_token
+                logging.info("Token refreshed and saved successfully.")
+            except Exception as e:
+                logging.error(f"Error refreshing token: {e}")
+                save_oauth2_token({})  # Clear bad token
+                messagebox.showerror(
+                    "Authentication Error", "Your session expired and could not be refreshed. Please authenticate again."
+                )
+                return None
+
+        return tweepy.Client(oauth2_handler.token["access_token"])
+
+    def _check_and_init_auth(self) -> None:
+        """Check for a saved token and prompt to auth if it's missing."""
+        token = load_oauth2_token()
+        if not token:
             if messagebox.askyesno(
-                "Missing Credentials",
-                "Twitter API credentials are not fully set.\n\n"
-                "You can compose a thread, but publishing will fail. "
-                "Do you want to enter them now?",
+                "Authentication Required",
+                "You are not authenticated with Twitter.\n\nDo you want to authenticate now?",
+                parent=self,
             ):
-                self._configure_credentials()
+                self._authenticate_with_twitter()
 
     def _open_promo_manager(self) -> None:
         """Open the dialog to manage promotional tweets."""
@@ -478,7 +481,7 @@ class ThreadComposer(tk.Tk):
         menubar.add_cascade(label="File", menu=file_menu)
 
         settings_menu = tk.Menu(menubar, tearoff=0)
-        settings_menu.add_command(label="Configure Credentials...", command=self._configure_credentials)
+        settings_menu.add_command(label="Authenticate with Twitter...", command=self._authenticate_with_twitter)
         settings_menu.add_command(label="Manage Promotions...", command=self._open_promo_manager)
         menubar.add_cascade(label="Settings", menu=settings_menu)
 
@@ -843,20 +846,11 @@ class ThreadComposer(tk.Tk):
 
     def _publish_handler(self) -> None:
         """Publish the composed thread using the Twitter API."""
-        creds = load_twitter_credentials()
-        if not all([creds.api_key, creds.api_secret, creds.access_token, creds.access_secret]):
-            logging.warning("Twitter credentials not set, prompting user.")
-            if not self._configure_credentials():
-                messagebox.showinfo("Publish Cancelled", "Credentials were not provided.", parent=self)
-                return
-            creds = load_twitter_credentials()
-
-        # If after attempting to configure, they are still not valid, then abort.
-        if not all([creds.api_key, creds.api_secret, creds.access_token, creds.access_secret]):
-            logging.error("Credentials still not set after configuration attempt.")
+        client = self._get_refreshed_client()
+        if not client:
             messagebox.showerror(
-                "Missing Credentials",
-                "Publishing failed because credentials are still missing.",
+                "Authentication Error",
+                "Cannot publish. Please authenticate via 'Settings -> Authenticate with Twitter...'",
                 parent=self,
             )
             return
@@ -864,10 +858,9 @@ class ThreadComposer(tk.Tk):
         try:
             self.config(cursor="watch")
             self.update_idletasks()
-            publish_thread(self.tweets, self.images, creds)
+            publish_thread(self.tweets, self.images, client)
             messagebox.showinfo("Success", "Thread published successfully!", parent=self)
 
-            # Move the source file to "enviados" subfolder if it exists
             if self.opened_thread_file_path:
                 self._archive_sent_thread_file()
 
