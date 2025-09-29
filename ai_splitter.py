@@ -14,36 +14,44 @@ logger = logging.getLogger(__name__)
 AI_MODEL = "gpt-4o-mini"
 
 SYSTEM_PROMPT = """
-You are an expert social media manager. Your task is to take a piece of text and split it into a compelling, coherent, and well-structured thread for X (formerly Twitter).
+You are an expert social media manager. Your task is to take a piece of text and generate multiple, distinct, and compelling thread options for X (formerly Twitter).
 
 Follow these rules strictly:
-1.  Each tweet must be under 280 characters.
-2.  Preserve all original emojis and the overall tone of the text.
-3.  Number the tweets in the format "1/n", "2/n", etc., at the end of each tweet, where 'n' is the total number of tweets in the thread.
-4.  The output MUST be a valid JSON object with a single key "thread" which contains an array of strings. Each string is one tweet.
+1.  Generate the exact number of thread versions requested by the user.
+2.  Each tweet within a thread must be under 280 characters.
+3.  Preserve all original emojis and the overall tone of the text.
+4.  Number the tweets in the format "1/n", "2/n", etc., at the end of each tweet, where 'n' is the total number of tweets in that specific thread.
+5.  The output MUST be a valid JSON object with a single key "threads" which contains an array of arrays. Each inner array represents one complete thread.
 
 Example Input Text:
-"Python is a versatile language. You can use it for web development, data science, and automation. It's great for beginners and experts alike."
+"User wants 2 versions of the following text: Python is a versatile language. You can use it for web development, data science, and automation. It's great for beginners and experts alike."
 
 Example Output JSON:
 {
-  "thread": [
-    "Python is a versatile language. You can use it for web development, data science, and automation. It's great for beginners and experts alike. 1/2",
-    "Whether you're building a simple script or a complex machine learning model, Python has the libraries and community support to get the job done. 2/2"
+  "threads": [
+    [
+      "Python is a versatile language, ideal for web dev, data science, & automation. It’s a top choice for both new and seasoned developers. 1/2",
+      "With vast libraries and strong community support, Python empowers you to build anything from a simple script to a complex AI model. 2/2"
+    ],
+    [
+      "Discover the power of Python! A versatile language perfect for web development, data science, and automating tasks. 1/2",
+      "Whether you're a beginner or an expert, Python's simplicity and robust ecosystem make it the ideal tool for your next project. 2/2"
+    ]
   ]
 }
 """
 
 
-def split_thread_with_ai(text: str) -> List[str]:
+def split_thread_with_ai(text: str, num_versions: int = 3) -> List[List[str]]:
     """
-    Uses OpenAI's chat model to split a long text into a Twitter thread.
+    Uses OpenAI's chat model to split a long text into multiple Twitter thread versions.
 
     Args:
         text: The full text to be split into a thread.
+        num_versions: The number of different thread versions to generate.
 
     Returns:
-        A list of strings, where each string is a tweet.
+        A list of lists of strings, where each inner list is a complete thread.
 
     Raises:
         ValueError: If the OpenAI API key is not configured.
@@ -54,14 +62,15 @@ def split_thread_with_ai(text: str) -> List[str]:
         raise ValueError("OpenAI API key not found. Please set OPENAI_API_KEY in your .env file.")
 
     client = openai.OpenAI(api_key=api_key)
+    user_prompt = f"Please generate {num_versions} different thread versions for the following text:\n\n{text}"
 
     try:
-        logger.info("Calling OpenAI API with model %s to split thread...", AI_MODEL)
+        logger.info("Calling OpenAI API with model %s to generate %d thread versions...", AI_MODEL, num_versions)
         response = client.chat.completions.create(
             model=AI_MODEL,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": text},
+                {"role": "user", "content": user_prompt},
             ],
             temperature=0.7,
             response_format={"type": "json_object"},
@@ -74,12 +83,15 @@ def split_thread_with_ai(text: str) -> List[str]:
 
         # Parse the JSON response
         parsed_json = json.loads(content)
-        thread = parsed_json.get("thread")
+        threads = parsed_json.get("threads")
 
-        if not isinstance(thread, list) or not all(isinstance(t, str) for t in thread):
-            raise RuntimeError("AI response is not a valid JSON array of strings.")
+        # --- Validation for the new structure ---
+        if not isinstance(threads, list):
+            raise RuntimeError("AI response JSON is not a list.")
+        if not all(isinstance(thread, list) and all(isinstance(tweet, str) for tweet in thread) for thread in threads):
+            raise RuntimeError("AI response is not a valid JSON array of string arrays.")
 
-        return thread
+        return threads
 
     except openai.APIError as e:
         logger.exception("OpenAI API error occurred.")
@@ -88,5 +100,5 @@ def split_thread_with_ai(text: str) -> List[str]:
         logger.exception("Failed to decode JSON from AI response.")
         raise RuntimeError("The AI returned an invalid JSON format.") from e
     except (KeyError, TypeError) as e:
-        logger.exception("AI response JSON is missing the 'thread' key or is malformed.")
+        logger.exception("AI response JSON is missing the 'threads' key or is malformed.")
         raise RuntimeError("The AI response format was unexpected.") from e
