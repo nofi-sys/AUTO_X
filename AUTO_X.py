@@ -445,7 +445,7 @@ class ThreadComposer(tk.Tk):
 
         oauth2_handler = tweepy.OAuth2UserHandler(
             client_id=creds.client_id,
-            redirect_uri="https://127.0.0.1:3000/callback",
+            redirect_uri="http://localhost",
             scope=["tweet.read", "tweet.write", "users.read", "offline.access"],
             client_secret=creds.client_secret,
         )
