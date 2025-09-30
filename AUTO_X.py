@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import shutil
+import tempfile
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext, simpledialog
 from typing import List, Optional
@@ -22,6 +23,16 @@ from config import (
 from plain_thread import parse_plain_thread
 from promo_library import add_promo, delete_promo, get_all_promos
 from twitter_api import publish_thread
+from google_drive_api import (
+    get_drive_service,
+    get_or_create_workspace_folder,
+    download_file,
+    list_files_in_folder,
+    read_file_content,
+    write_file_content,
+    get_or_create_subfolder,
+    move_file,
+)
 
 logging.basicConfig(level=logging.INFO)
 
@@ -209,8 +220,8 @@ class SelectPromoDialog(tk.Toplevel):
         self.promo_listbox.delete(0, tk.END)
         self.promos = get_all_promos()
         for promo in self.promos:
-            has_image = promo.get("image_path")
-            image_info = f"[Image: {os.path.basename(has_image)}]" if has_image else "[No Image]"
+            image_filename = promo.get("image_filename")
+            image_info = f"[Image: {image_filename}]" if image_filename else "[No Image]"
             display_text = f"{promo.get('text', '')[:80]}... - {image_info}"
             self.promo_listbox.insert(tk.END, display_text)
 
@@ -235,6 +246,79 @@ class SelectPromoDialog(tk.Toplevel):
             messagebox.showwarning("No Selection", "Please select a promotion.", parent=self)
             return
         self.result = self.promos[selected_indices[0]]
+        self.destroy()
+
+    def _cancel(self) -> None:
+        """Cancel the selection."""
+        self.result = None
+        self.destroy()
+
+
+class GoogleDriveOpenDialog(tk.Toplevel):
+    """Dialog for selecting a thread file from Google Drive."""
+
+    def __init__(self, parent: tk.Tk, drive_service: Any, workspace_id: str) -> None:  # noqa: D107
+        super().__init__(parent)
+        self.transient(parent)
+        self.title("Open Thread File from Google Drive")
+        self.parent = parent
+        self.drive_service = drive_service
+        self.workspace_id = workspace_id
+        self.result: Optional[Dict[str, str]] = None
+        self.drive_files: List[Dict[str, str]] = []
+
+        body = ttk.Frame(self)
+        self._create_widgets(body)
+        body.pack(padx=20, pady=20, expand=True, fill="both")
+
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
+        self.grab_set()
+
+    def _create_widgets(self, master: ttk.Frame) -> None:
+        """Create the listbox and buttons for file selection."""
+        ttk.Label(master, text="Select a thread file to open:").pack(anchor="w")
+
+        list_frame = ttk.Frame(master)
+        list_frame.pack(pady=5, expand=True, fill="both")
+        self.file_listbox = tk.Listbox(list_frame, height=15, width=80)
+        self.file_listbox.pack(side="left", expand=True, fill="both")
+
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.file_listbox.yview)
+        scrollbar.pack(side="right", fill="y")
+        self.file_listbox.config(yscrollcommand=scrollbar.set)
+
+        self._refresh_file_list()
+
+        btn_frame = ttk.Frame(master)
+        btn_frame.pack(pady=(10, 0))
+        ttk.Button(btn_frame, text="Open", command=self._select).pack(side="left", padx=10)
+        ttk.Button(btn_frame, text="Cancel", command=self._cancel).pack(side="right", padx=10)
+
+    def _refresh_file_list(self) -> None:
+        """Fetch and display the list of .json files from the workspace folder."""
+        self.file_listbox.delete(0, tk.END)
+        self.file_listbox.insert(tk.END, "Loading files from Google Drive...")
+        self.update_idletasks()
+
+        try:
+            self.drive_files = list_files_in_folder(self.drive_service, self.workspace_id, "application/json")
+            self.file_listbox.delete(0, tk.END)
+            if not self.drive_files:
+                self.file_listbox.insert(tk.END, "No thread files (.json) found in workspace.")
+            for drive_file in self.drive_files:
+                self.file_listbox.insert(tk.END, drive_file.get("name", "Unknown File"))
+        except Exception as e:
+            self.file_listbox.delete(0, tk.END)
+            self.file_listbox.insert(tk.END, "Error loading files. See logs.")
+            messagebox.showerror("Error", f"Could not list files from Google Drive:\n{e}", parent=self)
+
+    def _select(self) -> None:
+        """Set the selected file as the result and close."""
+        selected_indices = self.file_listbox.curselection()
+        if not selected_indices:
+            messagebox.showwarning("No Selection", "Please select a file.", parent=self)
+            return
+        self.result = self.drive_files[selected_indices[0]]
         self.destroy()
 
     def _cancel(self) -> None:
@@ -289,8 +373,8 @@ class PromoManagerDialog(tk.Toplevel):
         self.promo_listbox.delete(0, tk.END)
         self.promos = get_all_promos()
         for promo in self.promos:
-            has_image = promo.get("image_path")
-            image_info = f"[Image: {os.path.basename(has_image)}]" if has_image else "[No Image]"
+            image_filename = promo.get("image_filename")
+            image_info = f"[Image: {image_filename}]" if image_filename else "[No Image]"
             display_text = f"{promo.get('text', '')[:80]}... - {image_info}"
             self.promo_listbox.insert(tk.END, display_text)
 
@@ -360,7 +444,7 @@ class ThreadComposer(tk.Tk):
         self.images: List[Optional[str]] = []
         self.char_count_labels: List[ttk.Label] = []
         self.image_path_labels: List[ttk.Label] = []
-        self.opened_thread_file_path: Optional[str] = None
+        self.opened_drive_thread_file: Optional[Dict[str, str]] = None  # Holds {'id': '...', 'name': '...'}
         self.twitter_client: Optional[tweepy.Client] = None
 
         # Style for validation labels
@@ -493,6 +577,41 @@ class ThreadComposer(tk.Tk):
         _center_window(dialog)
         self.wait_window(dialog)
 
+    def _authenticate_with_google_drive(self) -> None:
+        """Initiate Google Drive authentication and set up the workspace folder."""
+        self.config(cursor="watch")
+        self.update_idletasks()
+        try:
+            service = get_drive_service()
+            if service:
+                # Once authenticated, ensure the workspace folder exists
+                workspace_folder_id = get_or_create_workspace_folder(service)
+                if workspace_folder_id:
+                    messagebox.showinfo(
+                        "Google Drive Success",
+                        "Successfully authenticated and workspace folder is ready.",
+                        parent=self,
+                    )
+                else:
+                    messagebox.showerror(
+                        "Google Drive Error",
+                        "Authentication was successful, but could not create the workspace folder. "
+                        "Check the application logs for more details.",
+                        parent=self,
+                    )
+            else:
+                messagebox.showerror(
+                    "Google Drive Error",
+                    "Could not authenticate with Google Drive. Check the logs for details.\n\n"
+                    "Ensure 'credentials.json' is in the correct folder and is valid.",
+                    parent=self,
+                )
+        except Exception as e:
+            logging.exception("Failed during Google Drive authentication")
+            messagebox.showerror("Google Drive Error", f"An unexpected error occurred: {e}", parent=self)
+        finally:
+            self.config(cursor="")
+
     # ───────────────────────────────────────────────────── GUI CONSTRUCTION ────
     def _build_widgets(self) -> None:
         """Create and place the GUI widgets."""
@@ -501,11 +620,14 @@ class ThreadComposer(tk.Tk):
         self.config(menu=menubar)
 
         file_menu = tk.Menu(menubar, tearoff=0)
-        file_menu.add_command(label="Open Thread File...", command=self._open_thread_file_handler)
+        file_menu.add_command(label="Open Thread from Google Drive...", command=self._open_drive_thread_file_handler)
+        file_menu.add_command(label="Save Thread to Google Drive...", command=self._save_drive_thread_file_handler)
         menubar.add_cascade(label="File", menu=file_menu)
 
         settings_menu = tk.Menu(menubar, tearoff=0)
         settings_menu.add_command(label="Authenticate with Twitter...", command=self._authenticate_with_twitter)
+        settings_menu.add_command(label="Authenticate with Google Drive...", command=self._authenticate_with_google_drive)
+        settings_menu.add_separator()
         settings_menu.add_command(label="Manage Promotions...", command=self._open_promo_manager)
         menubar.add_cascade(label="Settings", menu=settings_menu)
 
@@ -630,38 +752,101 @@ class ThreadComposer(tk.Tk):
         self.publish_btn = ttk.Button(action_frame, text="🚀 Publish Thread", state="disabled", command=self._publish_handler)
         self.publish_btn.pack(side="left", padx=10)
 
-    # ───────────────────────────────────────────────────── EVENT HANDLERS ────
-    def _open_thread_file_handler(self) -> None:
-        """Open a JSON file containing threads, and let the user select one to load."""
-        file_path = filedialog.askopenfilename(
-            title="Open Thread File",
-            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
-            parent=self,
-        )
-        if not file_path:
+    # ───────────────────────────────────────────────── DRIVE EVENT HANDLERS ────
+    def _open_drive_thread_file_handler(self) -> None:
+        """Open a dialog to select and load a thread file from Google Drive."""
+        drive_service = get_drive_service()
+        if not drive_service:
+            messagebox.showerror("Google Drive Error", "Please authenticate with Google Drive first.", parent=self)
             return
 
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+        workspace_id = get_or_create_workspace_folder(drive_service)
+        if not workspace_id:
+            messagebox.showerror("Google Drive Error", "Could not find or create the workspace folder.", parent=self)
+            return
 
+        dialog = GoogleDriveOpenDialog(self, drive_service, workspace_id)
+        _center_window(dialog)
+        self.wait_window(dialog)
+        selected_file = dialog.result
+
+        if not selected_file:
+            return  # User cancelled
+
+        try:
+            file_id = selected_file["id"]
+            content = read_file_content(drive_service, file_id)
+            if not content:
+                raise ValueError("File is empty or could not be read.")
+
+            data = json.loads(content)
             threads = data.get("threads")
             if not isinstance(threads, list) or not all(isinstance(t, list) for t in threads):
-                raise TypeError("JSON file is not in the expected format.")
+                raise TypeError("JSON file from Drive is not in the expected format.")
 
-            dialog = LoadThreadDialog(self, threads)
-            _center_window(dialog)
-            self.wait_window(dialog)  # Wait until the dialog is closed
-            selected_thread = dialog.result
+            # Let the user pick which thread from the file to load
+            load_dialog = LoadThreadDialog(self, threads)
+            _center_window(load_dialog)
+            self.wait_window(load_dialog)
+            selected_thread = load_dialog.result
 
             if selected_thread:
-                self.opened_thread_file_path = file_path  # Save path for later
+                self.opened_drive_thread_file = selected_file  # Store {'id': ..., 'name': ...}
                 self._render_tweets(selected_thread)
-                messagebox.showinfo("Thread Loaded", "The selected thread has been loaded into the editor.", parent=self)
+                messagebox.showinfo(
+                    "Thread Loaded",
+                    f"Thread loaded from '{selected_file['name']}' in Google Drive.",
+                    parent=self,
+                )
+        except (json.JSONDecodeError, TypeError, ValueError) as e:
+            messagebox.showerror("Error Loading File", f"Failed to load or parse the thread file from Drive:\n{e}", parent=self)
+            self.opened_drive_thread_file = None
 
-        except (IOError, json.JSONDecodeError, TypeError) as e:
-            messagebox.showerror("Error Loading File", f"Failed to load or parse the thread file:\n{e}", parent=self)
-            self.opened_thread_file_path = None
+    def _save_drive_thread_file_handler(self) -> None:
+        """Save the current thread to a JSON file in Google Drive."""
+        if not self.tweets:
+            messagebox.showwarning("No Content", "There is no thread to save.", parent=self)
+            return
+
+        drive_service = get_drive_service()
+        if not drive_service:
+            messagebox.showerror("Google Drive Error", "Please authenticate with Google Drive first.", parent=self)
+            return
+
+        workspace_id = get_or_create_workspace_folder(drive_service)
+        if not workspace_id:
+            messagebox.showerror("Google Drive Error", "Could not find or create the workspace folder.", parent=self)
+            return
+
+        file_id = self.opened_drive_thread_file.get("id") if self.opened_drive_thread_file else None
+        filename = self.opened_drive_thread_file.get("name") if self.opened_drive_thread_file else None
+
+        if not filename:
+            filename = simpledialog.askstring("Save to Google Drive", "Enter a filename for the thread:", parent=self)
+            if not filename:
+                return  # User cancelled
+            if not filename.lower().endswith(".json"):
+                filename += ".json"
+
+        # Structure the data to be saved. We save the current thread as the only one in the list.
+        # A future improvement could be to load all threads, replace one, and save all back.
+        data_to_save = {"threads": [self.tweets]}
+        content = json.dumps(data_to_save, indent=2, ensure_ascii=False)
+
+        try:
+            self.config(cursor="watch")
+            self.update_idletasks()
+            new_file_id = write_file_content(drive_service, filename, content, workspace_id, file_id)
+            if new_file_id:
+                self.opened_drive_thread_file = {"id": new_file_id, "name": filename}
+                messagebox.showinfo("Success", f"Thread successfully saved to '{filename}' in Google Drive.", parent=self)
+            else:
+                raise IOError("Failed to get a valid file ID after writing to Drive.")
+        except Exception as e:
+            logging.exception("Failed to save thread to Google Drive")
+            messagebox.showerror("Save Error", f"Could not save the file to Google Drive:\n{e}", parent=self)
+        finally:
+            self.config(cursor="")
 
     def _handle_language_selection(self, event: tk.Event) -> None:
         """Handle the language selection combobox."""
@@ -689,8 +874,16 @@ class ThreadComposer(tk.Tk):
         if dialog.result:
             promo = dialog.result
             self.tweets.append(promo["text"])
-            self.images.append(promo.get("image_path"))
-            self._render_tweets(self.tweets)  # Re-render the entire thread
+
+            image_id = promo.get("image_id")
+            if image_id:
+                # Store a tuple to identify it as a Drive image that needs downloading
+                image_filename = promo.get("image_filename")
+                self.images.append(("drive", image_id, image_filename))
+            else:
+                self.images.append(None)
+
+            self._render_tweets(self.tweets, self.images)  # Re-render the entire thread
             messagebox.showinfo("Success", "Promotional tweet added to the end of the thread.", parent=self)
 
     def _parse_handler(self) -> None:
@@ -793,13 +986,14 @@ class ThreadComposer(tk.Tk):
         finally:
             self.config(cursor="")
 
-    def _render_tweets(self, tweets: List[str]) -> None:
+    def _render_tweets(self, tweets: List[str], images: Optional[List[Any]] = None) -> None:
         """Display parsed tweets in the preview list."""
         for w in self.tweets_frame.winfo_children():
             w.destroy()
 
         self.tweets = tweets
-        self.images = [None] * len(tweets)
+        # If no images are provided, initialize a list of Nones. Otherwise, use the provided list.
+        self.images = images if images is not None else [None] * len(tweets)
         self.char_count_labels = []
         self.image_path_labels = []
 
@@ -829,6 +1023,17 @@ class ThreadComposer(tk.Tk):
             image_path_label = ttk.Label(controls_frame, text="", wraplength=120)  # Show which image is attached
             image_path_label.pack(fill="x", pady=(4, 0))
             self.image_path_labels.append(image_path_label)
+
+            # --- Update image label based on image type ---
+            image_info = self.images[idx]
+            if isinstance(image_info, str):  # Local file path
+                self.image_path_labels[idx].config(text=os.path.basename(image_info))
+            elif isinstance(image_info, (list, tuple)) and image_info[0] == "drive":  # Google Drive file
+                # image_info is a tuple: ('drive', id, filename)
+                filename = image_info[2] if len(image_info) > 2 else "Drive Image"
+                self.image_path_labels[idx].config(text=f"(Drive) {filename}")
+            else:
+                self.image_path_labels[idx].config(text="")
 
         self._validate_tweets()
 
@@ -869,59 +1074,110 @@ class ThreadComposer(tk.Tk):
             messagebox.showinfo("Image attached", f"Image '{os.path.basename(path)}' added to tweet {index + 1}.")
 
     def _publish_handler(self) -> None:
-        """Publish the composed thread using the Twitter API."""
-        client = self._get_refreshed_client()
-        if not client:
+        """
+        Publish the composed thread, downloading any Drive images to a temp location first.
+        """
+        twitter_client = self._get_refreshed_client()
+        if not twitter_client:
             messagebox.showerror(
                 "Authentication Error",
-                "Cannot publish. Please authenticate via 'Settings -> Authenticate with Twitter...'",
+                "Cannot publish. Please authenticate with Twitter first.",
                 parent=self,
             )
             return
 
+        # This will hold the final list of local image paths for publishing.
+        final_image_paths = list(self.images)
+        temp_dir = None
+        drive_service = None  # Lazily initialized if needed
+
         try:
             self.config(cursor="watch")
             self.update_idletasks()
-            publish_thread(self.tweets, self.images, client)
+
+            # --- Download any images from Google Drive ---
+            for i, image_info in enumerate(self.images):
+                if isinstance(image_info, (list, tuple)) and image_info[0] == "drive":
+                    if not drive_service:
+                        drive_service = get_drive_service()
+                        if not drive_service:
+                            raise ConnectionError("Could not connect to Google Drive to download images.")
+
+                    if not temp_dir:
+                        temp_dir = tempfile.mkdtemp(prefix="autox_")
+                        logging.info(f"Created temporary directory for images: {temp_dir}")
+
+                    _, image_id, image_filename = image_info
+                    # Use a default filename if it's somehow missing
+                    safe_filename = image_filename or f"image_{image_id}.jpg"
+                    local_path = os.path.join(temp_dir, safe_filename)
+
+                    logging.info(f"Downloading Drive image {image_id} to {local_path}...")
+                    success = download_file(drive_service, image_id, local_path)
+                    if not success:
+                        raise IOError(f"Failed to download image: {safe_filename}")
+
+                    # Replace the tuple with the actual local path
+                    final_image_paths[i] = local_path
+
+            # --- Publish the thread with the final image paths ---
+            publish_thread(self.tweets, final_image_paths, twitter_client)
             messagebox.showinfo("Success", "Thread published successfully!", parent=self)
 
-            if self.opened_thread_file_path:
+            if self.opened_drive_thread_file:
                 self._archive_sent_thread_file()
 
         except Exception as exc:
             logging.exception("Failed to publish thread")
             messagebox.showerror("Error while publishing", str(exc), parent=self)
         finally:
+            # --- Clean up temporary files and directory ---
+            if temp_dir and os.path.exists(temp_dir):
+                try:
+                    shutil.rmtree(temp_dir)
+                    logging.info(f"Cleaned up temporary directory: {temp_dir}")
+                except Exception as e:
+                    logging.error(f"Failed to clean up temporary directory {temp_dir}: {e}")
             self.config(cursor="")
 
     def _archive_sent_thread_file(self) -> None:
-        """Move the successfully posted thread's source file to an 'enviados' subfolder."""
-        if not self.opened_thread_file_path:
+        """Move the successfully posted thread's source file to an 'enviados' subfolder in Google Drive."""
+        if not self.opened_drive_thread_file:
+            return
+
+        drive_service = get_drive_service()
+        if not drive_service:
+            messagebox.showwarning("Archive Warning", "Could not archive file: Google Drive is not connected.", parent=self)
             return
 
         try:
-            source_path = self.opened_thread_file_path
-            directory = os.path.dirname(source_path)
-            filename = os.path.basename(source_path)
+            file_id = self.opened_drive_thread_file["id"]
+            filename = self.opened_drive_thread_file["name"]
 
-            archive_dir = os.path.join(directory, "enviados")
-            os.makedirs(archive_dir, exist_ok=True)
+            workspace_id = get_or_create_workspace_folder(drive_service)
+            if not workspace_id:
+                raise ConnectionError("Could not determine the workspace folder.")
 
-            destination_path = os.path.join(archive_dir, filename)
-            shutil.move(source_path, destination_path)
+            archive_folder_id = get_or_create_subfolder(drive_service, "enviados", workspace_id)
+            if not archive_folder_id:
+                raise ConnectionError("Could not create the 'enviados' subfolder in Drive.")
 
-            logging.info(f"Archived sent thread file to {destination_path}")
-            messagebox.showinfo(
-                "File Archived",
-                f"The source file has been moved to the 'enviados' subfolder.",
-                parent=self,
-            )
-        except (IOError, OSError) as e:
-            logging.exception(f"Could not archive sent thread file: {self.opened_thread_file_path}")
-            messagebox.showerror("Archive Error", f"Could not move the source file:\n{e}", parent=self)
+            success = move_file(drive_service, file_id, archive_folder_id)
+            if success:
+                messagebox.showinfo(
+                    "File Archived",
+                    f"The source file '{filename}' has been moved to the 'enviados' subfolder in Google Drive.",
+                    parent=self,
+                )
+            else:
+                raise IOError(f"Failed to move file '{filename}' in Drive.")
+
+        except Exception as e:
+            logging.exception(f"Could not archive sent thread file in Drive: {self.opened_drive_thread_file}")
+            messagebox.showerror("Archive Error", f"Could not move the source file in Google Drive:\n{e}", parent=self)
         finally:
-            # Reset the path regardless of success to prevent re-archiving
-            self.opened_thread_file_path = None
+            # Reset the file info regardless of success to prevent re-archiving
+            self.opened_drive_thread_file = None
 
 
 if __name__ == "__main__":

@@ -3,3 +3,7 @@ Tweepy>=4.14
 openai>=1.0
 python-dotenv>=1.0
 pytest>=8.0
+
+# Added for Google Drive Integration
+google-api-python-client
+google-auth-oauthlib
