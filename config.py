@@ -10,6 +10,11 @@ from dotenv import load_dotenv
 # Load .env file into environment variables
 load_dotenv()
 
+# --- Google Drive Workspace ---
+# Override `GOOGLE_DRIVE_WORKSPACE_ID` in your .env file to point the app to a different Drive folder.
+# If you prefer to hardcode a new default, edit `DEFAULT_WORKSPACE_FOLDER_ID` below.
+DEFAULT_WORKSPACE_FOLDER_ID = "1YRa4WJFr53mUP4I4R1WECznRjAEOzFm6"
+
 OAUTH2_TOKEN_FILE = "oauth2_token.json"
 
 
@@ -49,6 +54,19 @@ def load_twitter_oauth2_credentials() -> TwitterOAuth2Credentials:
         client_id=os.getenv("TWITTER_CLIENT_ID", ""),
         client_secret=os.getenv("TWITTER_CLIENT_SECRET", ""),
     )
+
+
+def load_google_drive_workspace_id() -> str:
+    """
+    Return the Google Drive folder ID where the app stores its threads.
+
+    Update `GOOGLE_DRIVE_WORKSPACE_ID` in the .env file or edit `DEFAULT_WORKSPACE_FOLDER_ID`
+    in config.py to change this location in the future.
+    """
+    folder_id = os.getenv("GOOGLE_DRIVE_WORKSPACE_ID")
+    if folder_id and folder_id.strip():
+        return folder_id.strip()
+    return DEFAULT_WORKSPACE_FOLDER_ID
 
 
 def save_oauth2_token(token: Dict[str, Any]) -> None:

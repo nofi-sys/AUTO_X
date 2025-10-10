@@ -1,7 +1,7 @@
 import os
 import logging
 import io
-from typing import Optional
+from typing import Dict, List, Optional
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -9,6 +9,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build, Resource
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseUpload, MediaFileUpload, MediaIoBaseDownload
+from config import load_google_drive_workspace_id
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -21,6 +22,7 @@ SCOPES = ["https://www.googleapis.com/auth/drive"]
 CREDENTIALS_FILE = "credentials.json"
 GOOGLE_TOKEN_FILE = "google_token.json"
 WORKSPACE_FOLDER_NAME = "AUTO_X_Workspace"
+WORKSPACE_FOLDER_ID = load_google_drive_workspace_id()
 
 
 def get_drive_service() -> Optional[Resource]:
@@ -98,6 +100,22 @@ def get_or_create_workspace_folder(drive_service: Resource) -> Optional[str]:
         The ID of the workspace folder, or None if an error occurs.
     """
     try:
+        if WORKSPACE_FOLDER_ID:
+            try:
+                drive_service.files().get(fileId=WORKSPACE_FOLDER_ID, fields="id").execute()
+                logger.info(f"Using configured workspace folder ID: {WORKSPACE_FOLDER_ID}")
+                return WORKSPACE_FOLDER_ID
+            except HttpError as e:
+                logger.error(
+                    f"Configured workspace folder ID '{WORKSPACE_FOLDER_ID}' is not accessible: {e}"
+                )
+                # Fall back to searching by name.
+            except Exception as e:
+                logger.error(
+                    f"Unexpected error while validating configured folder ID '{WORKSPACE_FOLDER_ID}': {e}"
+                )
+                # Fall back to searching by name.
+
         # --- Search for the folder ---
         query = (
             f"mimeType='application/vnd.google-apps.folder' and "

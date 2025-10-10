@@ -33,6 +33,13 @@ def publish_thread(tweets: List[str], images: List[Optional[str]], client_v2: tw
         )
         api_v1 = tweepy.API(auth_v1)
 
+    use_oauth1 = bool(
+        getattr(client_v2, "consumer_key", None)
+        and getattr(client_v2, "consumer_secret", None)
+        and getattr(client_v2, "access_token", None)
+        and getattr(client_v2, "access_token_secret", None)
+    )
+
     previous_id: Optional[int] = None
     for txt, img in zip(tweets, images):
         media_ids = None
@@ -48,6 +55,7 @@ def publish_thread(tweets: List[str], images: List[Optional[str]], client_v2: tw
             text=txt,
             in_reply_to_tweet_id=previous_id,
             media_ids=media_ids,
+            user_auth=use_oauth1,
         )
         # The response contains a data object with the new tweet's details
         previous_id = response.data["id"]

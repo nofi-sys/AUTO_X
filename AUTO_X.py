@@ -7,7 +7,7 @@ import shutil
 import tempfile
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext, simpledialog
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 
@@ -16,6 +16,7 @@ import webbrowser
 import time
 import tweepy
 from config import (
+    load_twitter_credentials,
     load_twitter_oauth2_credentials,
     save_oauth2_token,
     load_oauth2_token,
@@ -472,7 +473,7 @@ class ThreadComposer(tk.Tk):
 
         oauth2_handler = tweepy.OAuth2UserHandler(
             client_id=creds.client_id,
-            redirect_uri="http://localhost",
+            redirect_uri="https://127.0.0.1",
             scope=["tweet.read", "tweet.write", "users.read", "offline.access"],
             client_secret=creds.client_secret,
         )
@@ -558,7 +559,19 @@ class ThreadComposer(tk.Tk):
                 messagebox.showerror("Authentication Error", full_error, parent=self)
                 return None
 
-        return tweepy.Client(oauth2_handler.token["access_token"])
+        oauth1_creds = load_twitter_credentials()
+
+        def _clean(value: str) -> Optional[str]:
+            value = value.strip() if isinstance(value, str) else value
+            return value or None
+
+        return tweepy.Client(
+            bearer_token=oauth2_handler.token["access_token"],
+            consumer_key=_clean(oauth1_creds.api_key),
+            consumer_secret=_clean(oauth1_creds.api_secret),
+            access_token=_clean(oauth1_creds.access_token),
+            access_token_secret=_clean(oauth1_creds.access_secret),
+        )
 
     def _check_and_init_auth(self) -> None:
         """Check for a saved token and prompt to auth if it's missing."""
