@@ -1,7 +1,8 @@
 """Wrapper around Tweepy for posting threads."""
 
-from typing import List, Optional
+from typing import Callable, List, Optional
 import logging
+import time
 import tweepy
 
 from config import load_twitter_credentials
@@ -9,16 +10,94 @@ from config import load_twitter_credentials
 logger = logging.getLogger(__name__)
 
 
-def publish_thread(tweets: List[str], images: List[Optional[str]], client_v2: tweepy.Client) -> None:
+class ThreadPublishPartialError(RuntimeError):
+    """Raised when the thread stops part-way through."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        next_index: int,
+        last_tweet_id: Optional[int],
+        posted_ids: List[Optional[int]],
+        wait_seconds: Optional[int] = None,
+        original: Optional[Exception] = None,
+    ):
+        super().__init__(message)
+        self.next_index = next_index
+        self.last_tweet_id = last_tweet_id
+        self.posted_ids = posted_ids
+        self.wait_seconds = wait_seconds
+        self.original = original
+
+
+class RateLimitError(ThreadPublishPartialError):
+    """Specialised error for 429 responses."""
+
+
+def _compute_wait_seconds(exc: tweepy.errors.TooManyRequests) -> Optional[int]:
+    headers = getattr(exc, "response", None)
+    if not headers or not getattr(headers, "headers", None):
+        return None
+    header_map = headers.headers
+    retry_after = header_map.get("retry-after")
+    if retry_after:
+        try:
+            retry_value = int(float(retry_after))
+            return max(retry_value, 1)
+        except (TypeError, ValueError):
+            pass
+    reset = header_map.get("x-rate-limit-reset")
+    if reset:
+        try:
+            reset_ts = int(reset)
+            wait_seconds = reset_ts - int(time.time())
+            return max(wait_seconds, 1)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def publish_thread(
+    tweets: List[str],
+    images: List[Optional[str]],
+    client_v2: tweepy.Client,
+    *,
+    start_index: int = 0,
+    initial_reply_id: Optional[int] = None,
+    delay_seconds: float = 2.0,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+) -> List[Optional[int]]:
     """
     Publish a sequence of tweets as a thread using an authenticated API v2 client.
 
-    Media uploads still require an API v1.1 client, which is created on-the-fly
-    using credentials from the .env file.
+    Args:
+        tweets: The ordered list of tweet texts.
+        images: Optional list of media paths aligned with ``tweets``.
+        client_v2: Tweepy v2 client with OAuth 2.0 or OAuth 1.0a user context.
+        start_index: Tweet index to resume from (defaults to 0).
+        initial_reply_id: Parent tweet ID when resuming a partial thread.
+        delay_seconds: Seconds to wait between tweets to avoid rate limits.
+        progress_callback: Optional callable invoked with (index, tweet_id) after each success.
+
+    Returns:
+        A list containing the tweet IDs for the indices that were posted in this run.
+
+    Raises:
+        RateLimitError: When Twitter returns HTTP 429.
+        ThreadPublishPartialError: When posting stops mid-thread for other reasons.
     """
+    total = len(tweets)
+    if total == 0:
+        return []
+
+    posted_ids: List[Optional[int]] = [None] * total
+
+    delay_seconds = max(delay_seconds, 0.0)
+
     api_v1 = None
-    # If there are images to upload, we need to set up the v1.1 client
-    if any(img for img in images):
+    remaining_images = images[start_index:] if start_index < len(images) else []
+    if any(img for img in remaining_images):
         creds_v1 = load_twitter_credentials()
         if not all([creds_v1.api_key, creds_v1.api_secret, creds_v1.access_token, creds_v1.access_secret]):
             raise ValueError(
@@ -33,31 +112,113 @@ def publish_thread(tweets: List[str], images: List[Optional[str]], client_v2: tw
         )
         api_v1 = tweepy.API(auth_v1)
 
-    use_oauth1 = bool(
-        getattr(client_v2, "consumer_key", None)
-        and getattr(client_v2, "consumer_secret", None)
-        and getattr(client_v2, "access_token", None)
-        and getattr(client_v2, "access_token_secret", None)
+    has_bearer_token = bool(getattr(client_v2, "bearer_token", None))
+    has_oauth1 = all(
+        getattr(client_v2, attr, None)
+        for attr in ("consumer_key", "consumer_secret", "access_token", "access_token_secret")
+    )
+    use_oauth1 = has_oauth1 and not has_bearer_token
+    logger.debug(
+        "Publishing thread using %s authentication for v2 tweets (starting at index %d)",
+        "OAuth 1.0a" if use_oauth1 else "OAuth 2.0 / Bearer",
+        start_index,
     )
 
-    previous_id: Optional[int] = None
-    for txt, img in zip(tweets, images):
+    previous_id: Optional[int] = initial_reply_id
+    last_success_index = start_index - 1
+
+    for idx in range(start_index, total):
+        txt = tweets[idx]
+        img = images[idx] if idx < len(images) else None
+
         media_ids = None
         if img:
             if not api_v1:
-                # This case should be prevented by the check above, but as a safeguard:
                 raise RuntimeError("Cannot upload media without a valid API v1.1 client.")
-            # The v1.1 endpoint is the recommended way to upload media for v2
-            upload = api_v1.media_upload(filename=img)
+            try:
+                upload = api_v1.media_upload(filename=img)
+            except tweepy.errors.Forbidden as exc:
+                api_messages = getattr(exc, "api_messages", None) or []
+                error_text = " ".join(api_messages) if api_messages else str(exc)
+                raise PermissionError(
+                    "Twitter rejected the media upload. Ensure your OAuth 1.0a credentials have Read & Write "
+                    "permissions enabled and regenerate the Access Token & Secret in the developer portal. "
+                    f"Twitter response: {error_text}"
+                ) from exc
             media_ids = [upload.media_id]
 
-        response = client_v2.create_tweet(
-            text=txt,
-            in_reply_to_tweet_id=previous_id,
-            media_ids=media_ids,
-            user_auth=use_oauth1,
-        )
-        # The response contains a data object with the new tweet's details
-        previous_id = response.data["id"]
+        def _post_tweet(user_auth_flag: bool):
+            return client_v2.create_tweet(
+                text=txt,
+                in_reply_to_tweet_id=previous_id,
+                media_ids=media_ids,
+                user_auth=user_auth_flag,
+            )
+
+        try:
+            response = _post_tweet(use_oauth1)
+        except tweepy.errors.Unauthorized as exc:
+            if not use_oauth1 and has_oauth1:
+                logger.info("OAuth 2.0 token rejected, retrying tweet %d with OAuth 1.0a.", idx + 1)
+                response = _post_tweet(True)
+            else:
+                raise
+        except tweepy.errors.Forbidden as exc:
+            api_messages = getattr(exc, "api_messages", None) or []
+            error_text = " ".join(api_messages) if api_messages else str(exc)
+            if "oauth1" in error_text.lower():
+                raise PermissionError(
+                    "Twitter rejected the request because the OAuth 1.0a credentials in the .env file "
+                    "do not have Read & Write permissions. Enable OAuth 1.0a with write access in the "
+                    "Twitter developer portal, regenerate the Access Token & Secret, and update the .env."
+                ) from exc
+            if "duplicate content" in error_text.lower():
+                snippet = (txt[:75] + "...") if len(txt) > 75 else txt
+                raise ValueError(
+                    "Twitter rejected one of the tweets because it matches content that was already posted. "
+                    "Edit the tweet to make it unique and try again.\n\n"
+                    f"Tweet snippet: \"{snippet}\""
+                ) from exc
+            raise
+        except tweepy.errors.TooManyRequests as exc:
+            wait_seconds = _compute_wait_seconds(exc)
+            logger.warning(
+                "Hit rate limit after posting %d/%d tweets. Suggested wait: %s seconds.",
+                last_success_index + 1,
+                total,
+                wait_seconds if wait_seconds is not None else "unknown",
+            )
+            raise RateLimitError(
+                "Twitter rate limited the thread publishing.",
+                next_index=idx,
+                last_tweet_id=previous_id,
+                posted_ids=posted_ids,
+                wait_seconds=wait_seconds,
+                original=exc,
+            ) from exc
+        except Exception as exc:
+            logger.exception("Unexpected error while posting tweet %d", idx + 1)
+            raise ThreadPublishPartialError(
+                "Twitter rejected one of the tweets before the thread finished.",
+                next_index=idx,
+                last_tweet_id=previous_id,
+                posted_ids=posted_ids,
+                original=exc,
+            ) from exc
+
+        tweet_id = response.data["id"]
+        previous_id = tweet_id
+        posted_ids[idx] = tweet_id
+        last_success_index = idx
+
+        if progress_callback:
+            try:
+                progress_callback(idx, tweet_id)
+            except Exception:  # pragma: no cover - callbacks should not break publishing
+                logger.exception("Progress callback raised an error for tweet %d", idx + 1)
+
+        if delay_seconds and idx < total - 1:
+            time.sleep(delay_seconds)
 
     logger.info("Thread published successfully")
+    return posted_ids

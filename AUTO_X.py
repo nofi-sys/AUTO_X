@@ -23,7 +23,7 @@ from config import (
 )
 from plain_thread import parse_plain_thread
 from promo_library import add_promo, delete_promo, get_all_promos
-from twitter_api import publish_thread
+from twitter_api import publish_thread, RateLimitError, ThreadPublishPartialError
 from google_drive_api import (
     get_drive_service,
     get_or_create_workspace_folder,
@@ -445,8 +445,14 @@ class ThreadComposer(tk.Tk):
         self.images: List[Optional[str]] = []
         self.char_count_labels: List[ttk.Label] = []
         self.image_path_labels: List[ttk.Label] = []
+        self.publish_status_labels: List[ttk.Label] = []
+        self.posted_tweet_ids: List[Optional[int]] = []
+        self.publish_resume_info: Optional[Dict[str, Any]] = None
         self.opened_drive_thread_file: Optional[Dict[str, str]] = None  # Holds {'id': '...', 'name': '...'}
         self.twitter_client: Optional[tweepy.Client] = None
+        self.publish_button_default_text = "\U0001f680 Publish Thread"
+        self.publish_button_resume_text = "\U0001f680 Resume Thread"
+        self.publish_delay_seconds = 2.0
 
         # Style for validation labels
         self.style = ttk.Style(self)
@@ -598,7 +604,11 @@ class ThreadComposer(tk.Tk):
             service = get_drive_service()
             if service:
                 # Once authenticated, ensure the workspace folder exists
-                workspace_folder_id = get_or_create_workspace_folder(service)
+                try:
+                    workspace_folder_id = get_or_create_workspace_folder(service)
+                except ConnectionError as exc:
+                    messagebox.showerror("Google Drive Error", str(exc), parent=self)
+                    return
                 if workspace_folder_id:
                     messagebox.showinfo(
                         "Google Drive Success",
@@ -762,7 +772,12 @@ class ThreadComposer(tk.Tk):
 
         self.add_promo_btn = ttk.Button(action_frame, text="Add Promotional Tweet", command=self._add_promo_tweet_handler)
         self.add_promo_btn.pack(side="left", padx=10)
-        self.publish_btn = ttk.Button(action_frame, text="🚀 Publish Thread", state="disabled", command=self._publish_handler)
+        self.publish_btn = ttk.Button(
+            action_frame,
+            text=self.publish_button_default_text,
+            state="disabled",
+            command=self._publish_handler,
+        )
         self.publish_btn.pack(side="left", padx=10)
 
     # ───────────────────────────────────────────────── DRIVE EVENT HANDLERS ────
@@ -773,7 +788,11 @@ class ThreadComposer(tk.Tk):
             messagebox.showerror("Google Drive Error", "Please authenticate with Google Drive first.", parent=self)
             return
 
-        workspace_id = get_or_create_workspace_folder(drive_service)
+        try:
+            workspace_id = get_or_create_workspace_folder(drive_service)
+        except ConnectionError as exc:
+            messagebox.showerror("Google Drive Error", str(exc), parent=self)
+            return
         if not workspace_id:
             messagebox.showerror("Google Drive Error", "Could not find or create the workspace folder.", parent=self)
             return
@@ -826,7 +845,11 @@ class ThreadComposer(tk.Tk):
             messagebox.showerror("Google Drive Error", "Please authenticate with Google Drive first.", parent=self)
             return
 
-        workspace_id = get_or_create_workspace_folder(drive_service)
+        try:
+            workspace_id = get_or_create_workspace_folder(drive_service)
+        except ConnectionError as exc:
+            messagebox.showerror("Google Drive Error", str(exc), parent=self)
+            return
         if not workspace_id:
             messagebox.showerror("Google Drive Error", "Could not find or create the workspace folder.", parent=self)
             return
@@ -1009,6 +1032,10 @@ class ThreadComposer(tk.Tk):
         self.images = images if images is not None else [None] * len(tweets)
         self.char_count_labels = []
         self.image_path_labels = []
+        self.publish_status_labels = []
+        self.posted_tweet_ids = [None] * len(tweets)
+        self.publish_resume_info = None
+        self.publish_btn.config(text=self.publish_button_default_text)
 
         for idx, txt in enumerate(tweets):
             row = ttk.Frame(self.tweets_frame)
@@ -1036,6 +1063,10 @@ class ThreadComposer(tk.Tk):
             image_path_label = ttk.Label(controls_frame, text="", wraplength=120)  # Show which image is attached
             image_path_label.pack(fill="x", pady=(4, 0))
             self.image_path_labels.append(image_path_label)
+
+            status_label = ttk.Label(controls_frame, text="Pending")
+            status_label.pack(fill="x", pady=(4, 0))
+            self.publish_status_labels.append(status_label)
 
             # --- Update image label based on image type ---
             image_info = self.images[idx]
@@ -1086,6 +1117,34 @@ class ThreadComposer(tk.Tk):
             self.image_path_labels[index].config(text=os.path.basename(path))
             messagebox.showinfo("Image attached", f"Image '{os.path.basename(path)}' added to tweet {index + 1}.")
 
+    # --- Publish Progress Helpers ---
+    def _set_publish_status(self, index: int, text: str) -> None:
+        if 0 <= index < len(self.publish_status_labels):
+            self.publish_status_labels[index].config(text=text)
+
+    def _reset_publish_progress(self) -> None:
+        self.posted_tweet_ids = [None] * len(self.tweets)
+        for label in self.publish_status_labels:
+            label.config(text="Pending")
+
+    def _prepare_publish_run(self, start_index: int) -> None:
+        if start_index == 0:
+            self._reset_publish_progress()
+        else:
+            for idx in range(start_index, len(self.publish_status_labels)):
+                if self.publish_status_labels[idx].cget("text") != "Posted":
+                    self.publish_status_labels[idx].config(text="Pending")
+
+    def _on_publish_progress(self, index: int, tweet_id: int) -> None:
+        if index < len(self.posted_tweet_ids):
+            self.posted_tweet_ids[index] = tweet_id
+        self._set_publish_status(index, "Posted")
+        next_index = index + 1
+        if next_index < len(self.publish_status_labels):
+            current = self.publish_status_labels[next_index].cget("text")
+            if current == "Pending":
+                self._set_publish_status(next_index, "Posting...")
+
     def _publish_handler(self) -> None:
         """
         Publish the composed thread, downloading any Drive images to a temp location first.
@@ -1099,17 +1158,66 @@ class ThreadComposer(tk.Tk):
             )
             return
 
+        if len(self.tweets) == 0:
+            messagebox.showwarning("No Thread", "There is no tweet to publish.", parent=self)
+            return
+
         # This will hold the final list of local image paths for publishing.
         final_image_paths = list(self.images)
         temp_dir = None
         drive_service = None  # Lazily initialized if needed
+        resume_info = self.publish_resume_info or {}
+        start_index = 0
+        initial_reply_id: Optional[int] = None
+
+        if resume_info and resume_info.get("next_index", 0) < len(self.tweets):
+            next_index = resume_info["next_index"]
+            wait_seconds = resume_info.get("wait_seconds")
+            last_tweet_id = resume_info.get("last_tweet_id")
+            resume_prompt = (
+                f"{next_index} of {len(self.tweets)} tweets were published.\n"
+                f"Resume from tweet #{next_index + 1}?"
+            )
+            if wait_seconds:
+                resume_prompt = (
+                    f"{next_index} of {len(self.tweets)} tweets were published.\n"
+                    f"Suggested wait before resuming: {wait_seconds} seconds.\n\n"
+                    "Resume from the next tweet now?"
+                )
+            if messagebox.askyesno("Resume publishing?", resume_prompt, parent=self):
+                start_index = next_index
+                initial_reply_id = last_tweet_id
+            else:
+                self.publish_resume_info = None
+                self._reset_publish_progress()
+                start_index = 0
+                initial_reply_id = None
+        else:
+            self.publish_resume_info = None
+
+        if start_index >= len(self.tweets):
+            messagebox.showinfo("Already posted", "All tweets in this thread were already published.", parent=self)
+            self.publish_btn.config(text=self.publish_button_default_text)
+            return
+
+        if start_index == 0:
+            initial_reply_id = None
+        elif initial_reply_id is None and self.posted_tweet_ids:
+            prev_index = start_index - 1
+            if 0 <= prev_index < len(self.posted_tweet_ids):
+                initial_reply_id = self.posted_tweet_ids[prev_index]
+
+        self._prepare_publish_run(start_index)
+        self._set_publish_status(start_index, "Posting...")
+        self.publish_btn.config(text=self.publish_button_default_text)
 
         try:
             self.config(cursor="watch")
             self.update_idletasks()
 
             # --- Download any images from Google Drive ---
-            for i, image_info in enumerate(self.images):
+            for i in range(start_index, len(self.images)):
+                image_info = self.images[i]
                 if isinstance(image_info, (list, tuple)) and image_info[0] == "drive":
                     if not drive_service:
                         drive_service = get_drive_service()
@@ -1134,14 +1242,94 @@ class ThreadComposer(tk.Tk):
                     final_image_paths[i] = local_path
 
             # --- Publish the thread with the final image paths ---
-            publish_thread(self.tweets, final_image_paths, twitter_client)
+            posted_ids = publish_thread(
+                self.tweets,
+                final_image_paths,
+                twitter_client,
+                start_index=start_index,
+                initial_reply_id=initial_reply_id,
+                delay_seconds=self.publish_delay_seconds,
+                progress_callback=self._on_publish_progress,
+            )
+            for idx, tweet_id in enumerate(posted_ids):
+                if tweet_id:
+                    if idx < len(self.posted_tweet_ids):
+                        self.posted_tweet_ids[idx] = tweet_id
+
             messagebox.showinfo("Success", "Thread published successfully!", parent=self)
+            self.publish_resume_info = None
+            self.publish_btn.config(text=self.publish_button_default_text)
 
             if self.opened_drive_thread_file:
                 self._archive_sent_thread_file()
 
+        except RateLimitError as exc:
+            logging.warning(
+                "Publishing hit Twitter rate limit at tweet %d/%d",
+                exc.next_index + 1,
+                len(self.tweets),
+            )
+            if exc.posted_ids:
+                for idx, tweet_id in enumerate(exc.posted_ids):
+                    if tweet_id:
+                        if idx < len(self.posted_tweet_ids):
+                            self.posted_tweet_ids[idx] = tweet_id
+                        self._set_publish_status(idx, "Posted")
+            if exc.next_index < len(self.publish_status_labels):
+                self._set_publish_status(exc.next_index, "Rate limited")
+            message_lines = [
+                "Twitter rate limited the thread before finishing.",
+                f"Published {exc.next_index} of {len(self.tweets)} tweets.",
+            ]
+            if exc.wait_seconds:
+                minutes = exc.wait_seconds // 60
+                seconds = exc.wait_seconds % 60
+                if minutes > 0:
+                    message_lines.append(f"Suggested wait: {minutes} min {seconds} sec.")
+                else:
+                    message_lines.append(f"Suggested wait: {seconds} sec.")
+            self.publish_resume_info = {
+                "next_index": exc.next_index,
+                "last_tweet_id": exc.last_tweet_id,
+                "wait_seconds": exc.wait_seconds,
+            }
+            self.publish_btn.config(text=self.publish_button_resume_text)
+            message_lines.append("Click the publish button again to resume once you are ready.")
+            messagebox.showwarning(
+                "Rate limit",
+                "\n".join(message_lines),
+                parent=self,
+            )
+        except ThreadPublishPartialError as exc:
+            logging.exception("Thread publishing stopped early")
+            if exc.posted_ids:
+                for idx, tweet_id in enumerate(exc.posted_ids):
+                    if tweet_id:
+                        if idx < len(self.posted_tweet_ids):
+                            self.posted_tweet_ids[idx] = tweet_id
+                        self._set_publish_status(idx, "Posted")
+            if exc.next_index < len(self.publish_status_labels):
+                self._set_publish_status(exc.next_index, "Error")
+            self.publish_resume_info = {
+                "next_index": exc.next_index,
+                "last_tweet_id": exc.last_tweet_id,
+                "wait_seconds": None,
+            }
+            self.publish_btn.config(text=self.publish_button_resume_text)
+            messagebox.showerror(
+                "Publishing interrupted",
+                "\n".join(
+                    [
+                        f"The thread stopped at tweet #{exc.next_index + 1}.",
+                        str(exc),
+                        "Update the tweet and click the publish button to resume from the next one.",
+                    ]
+                ),
+                parent=self,
+            )
         except Exception as exc:
             logging.exception("Failed to publish thread")
+            self.publish_btn.config(text=self.publish_button_default_text)
             messagebox.showerror("Error while publishing", str(exc), parent=self)
         finally:
             # --- Clean up temporary files and directory ---
@@ -1167,7 +1355,10 @@ class ThreadComposer(tk.Tk):
             file_id = self.opened_drive_thread_file["id"]
             filename = self.opened_drive_thread_file["name"]
 
-            workspace_id = get_or_create_workspace_folder(drive_service)
+            try:
+                workspace_id = get_or_create_workspace_folder(drive_service)
+            except ConnectionError:
+                raise
             if not workspace_id:
                 raise ConnectionError("Could not determine the workspace folder.")
 

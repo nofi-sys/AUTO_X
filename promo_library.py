@@ -26,7 +26,11 @@ def _get_promotions() -> List[Dict[str, Optional[str]]]:
         logger.error("Cannot get promotions: Google Drive service is not available.")
         return []
 
-    workspace_id = get_or_create_workspace_folder(drive_service)
+    try:
+        workspace_id = get_or_create_workspace_folder(drive_service)
+    except ConnectionError as exc:
+        logger.error("Cannot get promotions: %s", exc)
+        return []
     if not workspace_id:
         logger.error("Cannot get promotions: Google Drive workspace folder is not available.")
         return []
@@ -53,7 +57,11 @@ def _save_promotions(promotions: List[Dict[str, Optional[str]]]) -> None:
         logger.error("Cannot save promotions: Google Drive service is not available.")
         return
 
-    workspace_id = get_or_create_workspace_folder(drive_service)
+    try:
+        workspace_id = get_or_create_workspace_folder(drive_service)
+    except ConnectionError as exc:
+        logger.error("Cannot save promotions: %s", exc)
+        return
     if not workspace_id:
         logger.error("Cannot save promotions: Google Drive workspace folder is not available.")
         return
@@ -81,7 +89,12 @@ def add_promo(text: str, image_path: Optional[str] = None) -> None:
         raise ValueError("Promotional text cannot be empty.")
 
     drive_service = get_drive_service()
-    workspace_id = get_or_create_workspace_folder(drive_service) if drive_service else None
+    workspace_id = None
+    if drive_service:
+        try:
+            workspace_id = get_or_create_workspace_folder(drive_service)
+        except ConnectionError as exc:
+            raise ConnectionError(str(exc)) from exc
 
     if image_path and (not drive_service or not workspace_id):
         raise ConnectionError("Cannot upload image: Google Drive service is not available.")

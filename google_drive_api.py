@@ -23,6 +23,51 @@ CREDENTIALS_FILE = "credentials.json"
 GOOGLE_TOKEN_FILE = "google_token.json"
 WORKSPACE_FOLDER_NAME = "AUTO_X_Workspace"
 WORKSPACE_FOLDER_ID = load_google_drive_workspace_id()
+_NETWORK_ERROR_HINTS = (
+    "unable to find the server",
+    "name or service not known",
+    "failed to establish a new connection",
+    "getaddrinfo failed",
+    "temporary failure in name resolution",
+    "nodename nor servname provided",
+)
+
+
+def _iter_error_chain(error: Exception):
+    """Yield an exception and its chained causes to probe nested error messages."""
+    seen = set()
+    current = error
+    while current and id(current) not in seen:
+        yield current
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+
+
+def _raise_if_connection_issue(error: Exception, context: str) -> None:
+    """
+    Convert low-level network failures into a user-facing ConnectionError with guidance.
+
+    Args:
+        error: The original exception raised by the Google client.
+        context: Short description of the action that was being attempted.
+    """
+    for err in _iter_error_chain(error):
+        message = str(err).lower()
+        if any(hint in message for hint in _NETWORK_ERROR_HINTS):
+            raise ConnectionError(
+                f"{context} failed because the app could not reach Google Drive (www.googleapis.com). "
+                "Verify you have an active internet connection and that no firewall or proxy is blocking "
+                "access to Google services."
+            ) from error
+
+
+def _cleanup_partial_file(path: str) -> None:
+    """Best-effort removal for partially downloaded files left on disk."""
+    try:
+        if path and os.path.exists(path):
+            os.remove(path)
+    except OSError as cleanup_error:
+        logger.warning("Failed to remove partial file '%s': %s", path, cleanup_error)
 
 
 def get_drive_service() -> Optional[Resource]:
@@ -111,6 +156,7 @@ def get_or_create_workspace_folder(drive_service: Resource) -> Optional[str]:
                 )
                 # Fall back to searching by name.
             except Exception as e:
+                _raise_if_connection_issue(e, "Validating the configured Google Drive workspace folder")
                 logger.error(
                     f"Unexpected error while validating configured folder ID '{WORKSPACE_FOLDER_ID}': {e}"
                 )
@@ -121,7 +167,12 @@ def get_or_create_workspace_folder(drive_service: Resource) -> Optional[str]:
             f"mimeType='application/vnd.google-apps.folder' and "
             f"name='{WORKSPACE_FOLDER_NAME}' and trashed=false"
         )
-        response = drive_service.files().list(q=query, spaces="drive", fields="files(id, name)").execute()
+        try:
+            response = drive_service.files().list(q=query, spaces="drive", fields="files(id, name)").execute()
+        except Exception as e:
+            _raise_if_connection_issue(e, "Listing folders in Google Drive")
+            logger.error(f"Unexpected error while listing workspace folders: {e}")
+            return None
         files = response.get("files", [])
 
         if files:
@@ -144,6 +195,9 @@ def get_or_create_workspace_folder(drive_service: Resource) -> Optional[str]:
         logger.error(f"An error occurred while accessing Google Drive: {e}")
         return None
     except Exception as e:
+        if isinstance(e, ConnectionError):
+            raise
+        _raise_if_connection_issue(e, "Accessing Google Drive")
         logger.error(f"An unexpected error occurred: {e}")
         return None
 
@@ -158,6 +212,12 @@ def find_file_in_folder(drive_service: Resource, filename: str, folder_id: str) 
     except HttpError as e:
         logger.error(f"Error finding file '{filename}': {e}")
         return None
+    except Exception as e:
+        if isinstance(e, ConnectionError):
+            raise
+        _raise_if_connection_issue(e, "Searching for files in Google Drive")
+        logger.error(f"Unexpected error while finding file '{filename}': {e}")
+        return None
 
 
 def read_file_content(drive_service: Resource, file_id: str) -> Optional[str]:
@@ -168,6 +228,12 @@ def read_file_content(drive_service: Resource, file_id: str) -> Optional[str]:
         return content
     except HttpError as e:
         logger.error(f"Error reading file content for file ID '{file_id}': {e}")
+        return None
+    except Exception as e:
+        if isinstance(e, ConnectionError):
+            raise
+        _raise_if_connection_issue(e, "Downloading file content from Google Drive")
+        logger.error(f"Unexpected error while reading file content for '{file_id}': {e}")
         return None
 
 
@@ -200,6 +266,12 @@ def write_file_content(drive_service: Resource, filename: str, content: str, fol
     except HttpError as e:
         logger.error(f"Error writing file '{filename}': {e}")
         return None
+    except Exception as e:
+        if isinstance(e, ConnectionError):
+            raise
+        _raise_if_connection_issue(e, "Uploading file content to Google Drive")
+        logger.error(f"Unexpected error while writing file '{filename}': {e}")
+        return None
 
 
 def upload_image(drive_service: Resource, local_image_path: str, folder_id: str) -> Optional[str]:
@@ -222,6 +294,9 @@ def upload_image(drive_service: Resource, local_image_path: str, folder_id: str)
         logger.error(f"Error uploading image '{local_image_path}': {e}")
         return None
     except Exception as e:
+        if isinstance(e, ConnectionError):
+            raise
+        _raise_if_connection_issue(e, "Uploading an image to Google Drive")
         logger.error(f"An unexpected error occurred during image upload: {e}")
         return None
 
@@ -235,26 +310,37 @@ def delete_file(drive_service: Resource, file_id: str) -> bool:
     except HttpError as e:
         logger.error(f"Error deleting file with ID '{file_id}': {e}")
         return False
+    except Exception as e:
+        if isinstance(e, ConnectionError):
+            raise
+        _raise_if_connection_issue(e, "Deleting a file from Google Drive")
+        logger.error(f"Unexpected error while deleting file with ID '{file_id}': {e}")
+        return False
 
 
 def download_file(drive_service: Resource, file_id: str, local_destination_path: str) -> bool:
     """Download a file from Google Drive to a local path."""
     try:
         request = drive_service.files().get_media(fileId=file_id)
-        fh = io.FileIO(local_destination_path, "wb")
-        downloader = MediaIoBaseDownload(fh, request)
+        with io.FileIO(local_destination_path, "wb") as fh:
+            downloader = MediaIoBaseDownload(fh, request)
 
-        done = False
-        while not done:
-            status, done = downloader.next_chunk()
-            logger.info(f"Download {int(status.progress() * 100)}%.")
+            done = False
+            while not done:
+                status, done = downloader.next_chunk()
+                logger.info(f"Download {int(status.progress() * 100)}%.")
 
         logger.info(f"Successfully downloaded file ID {file_id} to {local_destination_path}")
         return True
     except HttpError as e:
+        _cleanup_partial_file(local_destination_path)
         logger.error(f"Error downloading file with ID '{file_id}': {e}")
         return False
     except Exception as e:
+        if isinstance(e, ConnectionError):
+            raise
+        _cleanup_partial_file(local_destination_path)
+        _raise_if_connection_issue(e, "Downloading a file from Google Drive")
         logger.error(f"An unexpected error occurred during file download: {e}")
         return False
 
@@ -283,6 +369,12 @@ def get_or_create_subfolder(drive_service: Resource, folder_name: str, parent_fo
     except HttpError as e:
         logger.error(f"Error finding or creating subfolder '{folder_name}': {e}")
         return None
+    except Exception as e:
+        if isinstance(e, ConnectionError):
+            raise
+        _raise_if_connection_issue(e, f"Finding or creating the '{folder_name}' subfolder in Google Drive")
+        logger.error(f"Unexpected error for subfolder '{folder_name}': {e}")
+        return None
 
 
 def list_files_in_folder(drive_service: Resource, folder_id: str, mime_type: str = "application/json") -> List[Dict[str, str]]:
@@ -298,6 +390,12 @@ def list_files_in_folder(drive_service: Resource, folder_id: str, mime_type: str
         return response.get("files", [])
     except HttpError as e:
         logger.error(f"Error listing files in folder '{folder_id}': {e}")
+        return []
+    except Exception as e:
+        if isinstance(e, ConnectionError):
+            raise
+        _raise_if_connection_issue(e, "Listing files in a Google Drive folder")
+        logger.error(f"Unexpected error while listing files in folder '{folder_id}': {e}")
         return []
 
 
@@ -319,4 +417,10 @@ def move_file(drive_service: Resource, file_id: str, new_parent_id: str) -> bool
         return True
     except HttpError as e:
         logger.error(f"Error moving file {file_id}: {e}")
+        return False
+    except Exception as e:
+        if isinstance(e, ConnectionError):
+            raise
+        _raise_if_connection_issue(e, "Moving a file within Google Drive")
+        logger.error(f"Unexpected error while moving file {file_id}: {e}")
         return False
