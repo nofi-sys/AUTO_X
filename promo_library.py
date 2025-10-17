@@ -43,7 +43,8 @@ def _get_promotions() -> List[Dict[str, Optional[str]]]:
     try:
         content = read_file_content(drive_service, promo_file_id)
         if content:
-            return json.loads(content)
+            data = json.loads(content)
+            return data.get("promotions", [])
         return []
     except (json.JSONDecodeError, IOError) as e:
         logger.error(f"Error reading or parsing promotions file from Drive: {e}")
@@ -67,7 +68,7 @@ def _save_promotions(promotions: List[Dict[str, Optional[str]]]) -> None:
         return
 
     promo_file_id = find_file_in_folder(drive_service, PROMOTIONS_FILE, workspace_id)
-    content = json.dumps(promotions, indent=2)
+    content = json.dumps({"promotions": promotions}, indent=2)
 
     write_file_content(drive_service, PROMOTIONS_FILE, content, workspace_id, promo_file_id)
 

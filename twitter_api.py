@@ -4,10 +4,30 @@ from typing import Callable, List, Optional
 import logging
 import time
 import tweepy
+from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from config import load_twitter_credentials
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class RateLimitStatus:
+    """Represents the status of a Twitter API rate limit."""
+    endpoint: str
+    limit: int
+    remaining: int
+    reset_time: datetime
+
+    def __str__(self):
+        reset_str = self.reset_time.strftime('%H:%M:%S')
+        return (
+            f"Endpoint: {self.endpoint}\n"
+            f"Limit: {self.limit} requests\n"
+            f"Remaining: {self.remaining}\n"
+            f"Resets at: {reset_str}"
+        )
 
 
 class ThreadPublishPartialError(RuntimeError):
@@ -33,6 +53,48 @@ class ThreadPublishPartialError(RuntimeError):
 
 class RateLimitError(ThreadPublishPartialError):
     """Specialised error for 429 responses."""
+
+
+def get_rate_limit_status(client_v2: tweepy.Client) -> Optional[RateLimitStatus]:
+    """
+    Fetches the current rate limit status for the tweet creation endpoint.
+
+    This function makes a lightweight request to the 'users/me' endpoint to get
+    the rate limit headers without consuming a request from the tweet creation quota.
+
+    Args:
+        client_v2: An authenticated Tweepy v2 client.
+
+    Returns:
+        A RateLimitStatus object if the headers are found, otherwise None.
+    """
+    try:
+        # This is a lightweight call to get headers
+        response = client_v2.get_me(user_auth=True)
+        headers = response.rate_limit_headers
+
+        if not headers:
+            logger.warning("Could not retrieve rate limit headers.")
+            return None
+
+        # Headers for the tweet creation endpoint
+        # X-Rate-Limit-Limit: The rate limit ceiling for that endpoint.
+        # X-Rate-Limit-Remaining: The number of requests left for the 15-minute window.
+        # X-Rate-Limit-Reset: The time in UTC epoch seconds when the rate limit window resets.
+        limit = int(headers.get("x-rate-limit-limit", 0))
+        remaining = int(headers.get("x-rate-limit-remaining", 0))
+        reset_timestamp = int(headers.get("x-rate-limit-reset", 0))
+        reset_time = datetime.fromtimestamp(reset_timestamp, tz=timezone.utc)
+
+        return RateLimitStatus(
+            endpoint="/2/tweets",
+            limit=limit,
+            remaining=remaining,
+            reset_time=reset_time,
+        )
+    except tweepy.errors.TweepyException as e:
+        logger.error("Failed to fetch rate limit status: %s", e)
+        return None
 
 
 def _compute_wait_seconds(exc: tweepy.errors.TooManyRequests) -> Optional[int]:

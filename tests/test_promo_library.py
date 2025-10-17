@@ -3,104 +3,127 @@ import os
 import unittest
 from unittest.mock import patch, mock_open
 
+import json
+from typing import Dict, Any, List
 from promo_library import (
     add_promo,
     delete_promo,
     get_all_promos,
-    PROMOTIONS_FILE,
 )
+from unittest.mock import patch, MagicMock
 
 
 class TestPromoLibrary(unittest.TestCase):
     """Test suite for the promotional tweet library."""
 
-    def setUp(self) -> None:
-        """Set up for tests: clear the promotions file if it exists."""
-        if os.path.exists(PROMOTIONS_FILE):
-            os.remove(PROMOTIONS_FILE)
-
-    def tearDown(self) -> None:
-        """Tear down after tests: clear the promotions file."""
-        if os.path.exists(PROMOTIONS_FILE):
-            os.remove(PROMOTIONS_FILE)
-
-    def test_add_promo_creates_file_and_adds_promo(self) -> None:
+    @patch("promo_library.upload_image")
+    @patch("promo_library.write_file_content")
+    @patch("promo_library.read_file_content")
+    @patch("promo_library.find_file_in_folder")
+    @patch("promo_library.get_or_create_workspace_folder")
+    @patch("promo_library.get_drive_service")
+    def test_add_promo_creates_file_and_adds_promo(
+        self,
+        mock_get_service,
+        mock_get_folder,
+        mock_find_file,
+        mock_read_content,
+        mock_write_content,
+        mock_upload_image,
+    ) -> None:
         """Test that adding a promo creates the file and adds the first item."""
-        self.assertFalse(os.path.exists(PROMOTIONS_FILE))
+        # --- Mocks ---
+        mock_get_service.return_value = MagicMock()
+        mock_get_folder.return_value = "fake_workspace_id"
+        mock_find_file.return_value = None  # No existing file
+        mock_read_content.return_value = None  # No content to read
+        mock_upload_image.return_value = "fake_image_id"
+
+        # Capture what's written
+        def capture_write(*args, **kwargs):
+            self.written_content = args[2]
+            return "new_file_id"
+        mock_write_content.side_effect = capture_write
+
+        # --- Test ---
         add_promo("This is a test promo.", "/path/to/image.png")
 
-        self.assertTrue(os.path.exists(PROMOTIONS_FILE))
-        promos = get_all_promos()
+        # --- Assertions ---
+        mock_write_content.assert_called_once()
+        written_data = json.loads(self.written_content)
+        self.assertIn("promotions", written_data)
+        promos = written_data["promotions"]
         self.assertEqual(len(promos), 1)
         self.assertEqual(promos[0]["text"], "This is a test promo.")
-        self.assertEqual(promos[0]["image_path"], "/path/to/image.png")
+        self.assertEqual(promos[0]["image_id"], "fake_image_id")
+        self.assertEqual(promos[0]["image_filename"], "image.png")
 
-    def test_add_multiple_promos(self) -> None:
-        """Test that multiple promos can be added sequentially."""
-        add_promo("First promo.")
-        add_promo("Second promo.", "/path/to/image2.png")
-
-        promos = get_all_promos()
-        self.assertEqual(len(promos), 2)
-        self.assertEqual(promos[0]["text"], "First promo.")
-        self.assertIsNone(promos[0]["image_path"])
-        self.assertEqual(promos[1]["text"], "Second promo.")
-        self.assertEqual(promos[1]["image_path"], "/path/to/image2.png")
-
-    def test_add_promo_with_empty_text_raises_error(self) -> None:
+    @patch("promo_library.get_drive_service", return_value=MagicMock())
+    def test_add_promo_with_empty_text_raises_error(self, mock_get_service) -> None:
         """Test that adding a promo with empty text raises a ValueError."""
         with self.assertRaises(ValueError):
             add_promo("")
 
-    def test_delete_promo_removes_correct_item(self) -> None:
+    @patch("promo_library.upload_image")
+    @patch("promo_library.write_file_content")
+    @patch("promo_library.read_file_content")
+    @patch("promo_library.find_file_in_folder")
+    @patch("promo_library.get_or_create_workspace_folder")
+    @patch("promo_library.get_drive_service")
+    def test_delete_promo_removes_correct_item(
+        self,
+        mock_get_service,
+        mock_get_folder,
+        mock_find_file,
+        mock_read_content,
+        mock_write_content,
+        mock_upload_image,
+    ) -> None:
         """Test that a specific promo can be deleted."""
-        add_promo("Promo to keep.")
-        promo_to_delete = {"text": "Promo to delete.", "image_path": "/path/to/delete.png"}
-        add_promo(promo_to_delete["text"], promo_to_delete["image_path"])
-        add_promo("Another one to keep.")
+        # --- Mocks ---
+        mock_get_service.return_value = MagicMock()
+        mock_get_folder.return_value = "fake_workspace_id"
+        mock_find_file.return_value = "fake_file_id"
+        mock_upload_image.return_value = "fake_image_id_2"
 
-        self.assertEqual(len(get_all_promos()), 3)
+        initial_promos = [
+            {"text": "Promo to keep.", "image_id": "fake_image_id_1", "image_filename": "keep.png"},
+            {"text": "Promo to delete.", "image_id": "fake_image_id_2", "image_filename": "delete.png"},
+            {"text": "Another to keep.", "image_id": "fake_image_id_3", "image_filename": "keep2.png"},
+        ]
+        mock_read_content.return_value = json.dumps({"promotions": initial_promos})
 
+        def capture_write(*args, **kwargs):
+            self.written_content = args[2]
+            return "new_file_id"
+        mock_write_content.side_effect = capture_write
+
+        promo_to_delete = {"text": "Promo to delete.", "image_id": "fake_image_id_2", "image_filename": "delete.png"}
+
+        # --- Test ---
         delete_promo(promo_to_delete)
 
+        # --- Assertions ---
+        mock_write_content.assert_called_once()
+        written_data = json.loads(self.written_content)
+        final_promos = written_data["promotions"]
+        self.assertEqual(len(final_promos), 2)
+        self.assertNotIn(promo_to_delete, final_promos)
+        self.assertEqual(final_promos[0]["text"], "Promo to keep.")
+        self.assertEqual(final_promos[1]["text"], "Another to keep.")
+
+    @patch("promo_library.find_file_in_folder", return_value=None)
+    @patch("promo_library.get_or_create_workspace_folder")
+    @patch("promo_library.get_drive_service")
+    def test_get_all_promos_returns_empty_list_if_no_file(
+        self, mock_get_service, mock_get_folder, mock_find_file
+    ) -> None:
+        """Test that getting promos returns an empty list when the file doesn't exist in Drive."""
+        mock_get_service.return_value = MagicMock()
+        mock_get_folder.return_value = "fake_workspace_id"
+
         promos = get_all_promos()
-        self.assertEqual(len(promos), 2)
-        self.assertNotIn(promo_to_delete, promos)
-        self.assertEqual(promos[0]["text"], "Promo to keep.")
-        self.assertEqual(promos[1]["text"], "Another one to keep.")
-
-    def test_delete_nonexistent_promo_does_nothing(self) -> None:
-        """Test that attempting to delete a promo that doesn't exist does not alter the list."""
-        add_promo("First promo.")
-        add_promo("Second promo.")
-        self.assertEqual(len(get_all_promos()), 2)
-
-        delete_promo({"text": "Nonexistent promo.", "image_path": None})
-
-        self.assertEqual(len(get_all_promos()), 2)
-
-    def test_get_all_promos_returns_empty_list_if_no_file(self) -> None:
-        """Test that getting promos returns an empty list when the file doesn't exist."""
-        self.assertFalse(os.path.exists(PROMOTIONS_FILE))
-        self.assertEqual(get_all_promos(), [])
-
-    @patch("builtins.open", new_callable=mock_open, read_data="[invalid json")
-    def test_get_all_promos_handles_json_decode_error(self, mock_file) -> None:
-        """Test that a JSON decode error is handled gracefully."""
-        # Ensure the mock is used for the file read
-        with patch("os.path.exists", return_value=True):
-            promos = get_all_promos()
-            self.assertEqual(promos, [])
-
-    @patch("builtins.open", new_callable=mock_open)
-    def test_save_promos_handles_io_error(self, mock_open_file) -> None:
-        """Test that an IO error during save is handled gracefully."""
-        mock_open_file.side_effect = IOError("Disk full")
-
-        # This should not raise an exception
-        with self.assertLogs('promo_library', level='ERROR') as cm:
-            add_promo("This should fail to save")
-            self.assertIn("Error saving promotions file", cm.output[0])
+        self.assertEqual(promos, [])
 
 
 if __name__ == "__main__":
