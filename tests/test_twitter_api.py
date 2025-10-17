@@ -26,8 +26,8 @@ class TestPublishThread(unittest.TestCase):
         # --- Assertions ---
         # Assert create_tweet was called correctly
         calls = [
-            call(text="First tweet", in_reply_to_tweet_id=None, media_ids=None, user_auth=False),
-            call(text="Second tweet", in_reply_to_tweet_id=101, media_ids=None, user_auth=False),
+            call(text="First tweet", in_reply_to_tweet_id=None, media_ids=None, user_auth=True),
+            call(text="Second tweet", in_reply_to_tweet_id=101, media_ids=None, user_auth=True),
         ]
         mock_client.create_tweet.assert_has_calls(calls)
         self.assertEqual(mock_client.create_tweet.call_count, 2)
@@ -69,8 +69,8 @@ class TestPublishThread(unittest.TestCase):
 
         # Assert create_tweet was called correctly, with media_ids for the first one
         calls = [
-            call(text="Tweet with image", in_reply_to_tweet_id=None, media_ids=[999], user_auth=False),
-            call(text="Just text", in_reply_to_tweet_id=201, media_ids=None, user_auth=False),
+            call(text="Tweet with image", in_reply_to_tweet_id=None, media_ids=[999], user_auth=True),
+            call(text="Just text", in_reply_to_tweet_id=201, media_ids=None, user_auth=True),
         ]
         mock_client.create_tweet.assert_has_calls(calls)
         self.assertEqual(mock_client.create_tweet.call_count, 2)

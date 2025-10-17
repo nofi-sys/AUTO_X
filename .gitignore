@@ -8,3 +8,13 @@ __pycache__/
 credentials.json
 google_token.json
 oauth2_token.json
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+dist/
+build/

@@ -174,16 +174,8 @@ def publish_thread(
         )
         api_v1 = tweepy.API(auth_v1)
 
-    has_bearer_token = bool(getattr(client_v2, "bearer_token", None))
-    has_oauth1 = all(
-        getattr(client_v2, attr, None)
-        for attr in ("consumer_key", "consumer_secret", "access_token", "access_token_secret")
-    )
-    use_oauth1 = has_oauth1 and not has_bearer_token
     logger.debug(
-        "Publishing thread using %s authentication for v2 tweets (starting at index %d)",
-        "OAuth 1.0a" if use_oauth1 else "OAuth 2.0 / Bearer",
-        start_index,
+        "Publishing thread using OAuth 2.0 for tweets and OAuth 1.0a for media."
     )
 
     previous_id: Optional[int] = initial_reply_id
@@ -209,22 +201,16 @@ def publish_thread(
                 ) from exc
             media_ids = [upload.media_id]
 
-        def _post_tweet(user_auth_flag: bool):
-            return client_v2.create_tweet(
+        try:
+            # When using a client with both OAuth 1.0a and OAuth 2.0 credentials,
+            # we must specify `user_auth=True` to use the v1.1 endpoint for the request.
+            # This is necessary for media uploads to work correctly.
+            response = client_v2.create_tweet(
                 text=txt,
                 in_reply_to_tweet_id=previous_id,
                 media_ids=media_ids,
-                user_auth=user_auth_flag,
+                user_auth=True,
             )
-
-        try:
-            response = _post_tweet(use_oauth1)
-        except tweepy.errors.Unauthorized as exc:
-            if not use_oauth1 and has_oauth1:
-                logger.info("OAuth 2.0 token rejected, retrying tweet %d with OAuth 1.0a.", idx + 1)
-                response = _post_tweet(True)
-            else:
-                raise
         except tweepy.errors.Forbidden as exc:
             api_messages = getattr(exc, "api_messages", None) or []
             error_text = " ".join(api_messages) if api_messages else str(exc)
