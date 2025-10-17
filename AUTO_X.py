@@ -571,18 +571,15 @@ class ThreadComposer(tk.Tk):
                 messagebox.showerror("Authentication Error", full_error, parent=self)
                 return None
 
+        # The v2 client needs both the OAuth 2.0 bearer token for v2 endpoints
+        # and the OAuth 1.0a tokens for v1.1 endpoints (like media uploads).
         oauth1_creds = load_twitter_credentials()
-
-        def _clean(value: str) -> Optional[str]:
-            value = value.strip() if isinstance(value, str) else value
-            return value or None
-
         return tweepy.Client(
             bearer_token=oauth2_handler.token["access_token"],
-            consumer_key=_clean(oauth1_creds.api_key),
-            consumer_secret=_clean(oauth1_creds.api_secret),
-            access_token=_clean(oauth1_creds.access_token),
-            access_token_secret=_clean(oauth1_creds.access_secret),
+            consumer_key=oauth1_creds.api_key,
+            consumer_secret=oauth1_creds.api_secret,
+            access_token=oauth1_creds.access_token,
+            access_token_secret=oauth1_creds.access_secret,
         )
 
     def _check_and_init_auth(self) -> None:
