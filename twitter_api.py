@@ -70,8 +70,8 @@ def get_rate_limit_status(client_v2: tweepy.Client) -> Optional[RateLimitStatus]
     """
     try:
         # This is a lightweight call to get headers
-        response = client_v2.get_me(user_auth=True)
-        headers = response.rate_limit_headers
+        client_v2.get_me(user_auth=True)
+        headers = client_v2.last_response.headers
 
         if not headers:
             logger.warning("Could not retrieve rate limit headers.")
