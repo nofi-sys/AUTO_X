@@ -23,7 +23,13 @@ from config import (
 )
 from plain_thread import parse_plain_thread
 from promo_library import add_promo, delete_promo, get_all_promos
-from twitter_api import publish_thread, RateLimitError, ThreadPublishPartialError
+from twitter_api import (
+    publish_thread,
+    get_rate_limit_status,
+    RateLimitStatus,
+    ThreadPublishPartialError,
+    RateLimitError,
+)
 from google_drive_api import (
     get_drive_service,
     get_or_create_workspace_folder,
@@ -780,6 +786,31 @@ class ThreadComposer(tk.Tk):
         )
         self.publish_btn.pack(side="left", padx=10)
 
+        self.rate_limit_btn = ttk.Button(action_frame, text="Check Rate Limit", command=self._check_rate_limit)
+        self.rate_limit_btn.pack(side="left", padx=10)
+
+    def _check_rate_limit(self) -> None:
+        """Fetch and display the current Twitter API rate limit status."""
+        client = self._get_refreshed_client()
+        if not client:
+            messagebox.showerror("Authentication Error", "Please authenticate with Twitter first.", parent=self)
+            return
+
+        self.config(cursor="watch")
+        self.update_idletasks()
+        try:
+            status = get_rate_limit_status(client)
+            if status:
+                message = (
+                    f"Requests remaining: {status.remaining}/{status.limit}\n"
+                    f"Window resets at: {status.reset_time.strftime('%H:%M:%S %Z')}"
+                )
+                messagebox.showinfo("Rate Limit Status", message, parent=self)
+            else:
+                messagebox.showwarning("Could Not Check", "Could not retrieve rate limit status.", parent=self)
+        finally:
+            self.config(cursor="")
+
     # ───────────────────────────────────────────────── DRIVE EVENT HANDLERS ────
     def _open_drive_thread_file_handler(self) -> None:
         """Open a dialog to select and load a thread file from Google Drive."""
@@ -989,32 +1020,46 @@ class ThreadComposer(tk.Tk):
                 messagebox.showerror("AI Error", "The AI returned no threads.", parent=self)
                 return
 
-            # Prompt the user to save the generated threads to a file
-            file_path = filedialog.asksaveasfilename(
-                title="Save Generated Threads",
-                defaultextension=".json",
-                filetypes=[("JSON files", "*.json")],
-                parent=self,
-            )
-
-            if not file_path:
-                # User cancelled the save dialog
-                messagebox.showinfo("Cancelled", "AI generation was successful, but the threads were not saved.", parent=self)
+            # --- Google Drive Integration ---
+            drive_service = get_drive_service()
+            if not drive_service:
+                messagebox.showerror("Google Drive Error", "Please authenticate with Google Drive first.", parent=self)
                 return
 
             try:
-                # The AI returns a list of threads. We'll save it in a JSON object
-                # under a 'threads' key for clarity and future-proofing.
-                data_to_save = {"threads": threads}
-                with open(file_path, "w", encoding="utf-8") as f:
-                    json.dump(data_to_save, f, indent=2, ensure_ascii=False)
-                messagebox.showinfo(
-                    "Success",
-                    f"Successfully saved {len(threads)} generated threads to:\n{file_path}",
-                    parent=self,
-                )
-            except IOError as e:
-                messagebox.showerror("Save Error", f"Failed to save file: {e}", parent=self)
+                workspace_id = get_or_create_workspace_folder(drive_service)
+            except ConnectionError as exc:
+                messagebox.showerror("Google Drive Error", str(exc), parent=self)
+                return
+            if not workspace_id:
+                messagebox.showerror("Google Drive Error", "Could not find or create the workspace folder.", parent=self)
+                return
+
+            # Prompt the user for a filename
+            filename = simpledialog.askstring("Save to Google Drive", "Enter a filename for the generated threads:", parent=self)
+            if not filename:
+                messagebox.showinfo("Cancelled", "AI generation was successful, but the threads were not saved.", parent=self)
+                return
+            if not filename.lower().endswith(".json"):
+                filename += ".json"
+
+            # Save the generated threads to Google Drive
+            data_to_save = {"threads": threads}
+            content = json.dumps(data_to_save, indent=2, ensure_ascii=False)
+
+            try:
+                new_file_id = write_file_content(drive_service, filename, content, workspace_id)
+                if new_file_id:
+                    messagebox.showinfo(
+                        "Success",
+                        f"Successfully saved {len(threads)} generated threads to '{filename}' in Google Drive.",
+                        parent=self,
+                    )
+                else:
+                    raise IOError("Failed to get a valid file ID after writing to Drive.")
+            except Exception as e:
+                logging.exception("Failed to save AI-generated threads to Google Drive")
+                messagebox.showerror("Save Error", f"Could not save the file to Google Drive:\n{e}", parent=self)
 
         except (ValueError, RuntimeError) as exc:
             logging.exception("Failed to generate thread with AI")

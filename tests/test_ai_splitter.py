@@ -21,19 +21,28 @@ class TestAiSplitter(unittest.TestCase):
         # --- Call the function ---
         text_to_split = "This is a long text to split."
         num_versions = 2
-        result = split_thread_with_ai(text_to_split, num_versions=num_versions)
+        result = split_thread_with_ai(
+            text_to_split,
+            model="gpt-4o-mini",
+            language="English",
+            extra_instructions="",
+            num_versions=num_versions,
+        )
 
         # --- Assertions ---
         self.assertEqual(result, expected_threads)
         mock_openai_class.assert_called_once_with(api_key="fake_api_key")
-        expected_user_prompt = f"Please generate {num_versions} different thread versions for the following text:\n\n{text_to_split}"
+        expected_user_prompt = (
+            f"Please generate {num_versions} different and distinct thread versions in English "
+            f"for the following text. Each version should explore a different angle or aspect of the text.\n\n"
+            f'Original Text:\n"""\n{text_to_split}\n"""\n'
+        )
         mock_client.chat.completions.create.assert_called_once_with(
-            model=AI_MODEL,
+            model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": expected_user_prompt},
             ],
-            temperature=0.7,
             response_format={"type": "json_object"},
         )
 
@@ -41,7 +50,7 @@ class TestAiSplitter(unittest.TestCase):
     def test_split_thread_no_api_key(self, mock_load_key):
         """Test that a ValueError is raised if the API key is missing."""
         with self.assertRaisesRegex(ValueError, "OpenAI API key not found"):
-            split_thread_with_ai("Some text")
+            split_thread_with_ai("Some text", model="gpt-4o-mini", language="English", extra_instructions="")
 
     @patch("ai_splitter.load_openai_key", return_value="fake_api_key")
     @patch("ai_splitter.openai.OpenAI")
@@ -53,7 +62,7 @@ class TestAiSplitter(unittest.TestCase):
         mock_client.chat.completions.create.return_value = mock_response
 
         with self.assertRaisesRegex(RuntimeError, "The AI returned an invalid JSON format."):
-            split_thread_with_ai("Some text")
+            split_thread_with_ai("Some text", model="gpt-4o-mini", language="English", extra_instructions="")
 
     @patch("ai_splitter.load_openai_key", return_value="fake_api_key")
     @patch("ai_splitter.openai.OpenAI")
@@ -65,7 +74,7 @@ class TestAiSplitter(unittest.TestCase):
         mock_client.chat.completions.create.return_value = mock_response
 
         with self.assertRaisesRegex(RuntimeError, "AI response JSON is not a list"):
-            split_thread_with_ai("Some text")
+            split_thread_with_ai("Some text", model="gpt-4o-mini", language="English", extra_instructions="")
 
     @patch("ai_splitter.load_openai_key", return_value="fake_api_key")
     @patch("ai_splitter.openai.OpenAI")
@@ -78,4 +87,4 @@ class TestAiSplitter(unittest.TestCase):
         mock_client.chat.completions.create.return_value = mock_response
 
         with self.assertRaisesRegex(RuntimeError, "AI response is not a valid JSON array of string arrays."):
-            split_thread_with_ai("Some text")
+            split_thread_with_ai("Some text", model="gpt-4o-mini", language="English", extra_instructions="")
