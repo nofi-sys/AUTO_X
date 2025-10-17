@@ -44,6 +44,9 @@ def _get_promotions() -> List[Dict[str, Optional[str]]]:
         content = read_file_content(drive_service, promo_file_id)
         if content:
             data = json.loads(content)
+            # Handle legacy format where the file was just a list of promotions
+            if isinstance(data, list):
+                return data
             return data.get("promotions", [])
         return []
     except (json.JSONDecodeError, IOError) as e:
