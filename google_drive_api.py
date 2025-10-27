@@ -4,6 +4,7 @@ import io
 from typing import Dict, List, Optional
 
 from google.auth.transport.requests import Request
+from google.auth.exceptions import GoogleAuthError
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build, Resource
@@ -70,6 +71,16 @@ def _cleanup_partial_file(path: str) -> None:
         logger.warning("Failed to remove partial file '%s': %s", path, cleanup_error)
 
 
+def _clear_google_token() -> None:
+    """Remove the saved Google OAuth token so the user can reauthenticate."""
+    try:
+        if os.path.exists(GOOGLE_TOKEN_FILE):
+            os.remove(GOOGLE_TOKEN_FILE)
+            logger.info("Removed invalid Google token file: %s", GOOGLE_TOKEN_FILE)
+    except OSError as cleanup_error:
+        logger.warning("Failed to delete invalid Google token file '%s': %s", GOOGLE_TOKEN_FILE, cleanup_error)
+
+
 def get_drive_service() -> Optional[Resource]:
     """
     Authenticate with Google Drive and return a service object.
@@ -96,6 +107,9 @@ def get_drive_service() -> Optional[Resource]:
                 creds.refresh(Request())
             except Exception as e:
                 logger.error(f"Failed to refresh Google token: {e}")
+                if "invalid_grant" in str(e).lower():
+                    logger.warning("Stored Google token is invalid or revoked; clearing it and forcing re-authentication.")
+                    _clear_google_token()
                 # If refresh fails, we'll need to re-authenticate
                 creds = None
         # --- Handle initial authentication ---
@@ -110,6 +124,19 @@ def get_drive_service() -> Optional[Resource]:
                 flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
                 # This will open a browser window for the user to authorize
                 creds = flow.run_local_server(port=0)
+            except GoogleAuthError as e:
+                if "redirect_uri_mismatch" in str(e).lower():
+                    logger.error(
+                        "Google OAuth error: redirect_uri_mismatch. Ensure the OAuth client is of type "
+                        "'Desktop App' or has http://localhost authorized as a redirect URI."
+                    )
+                    raise RuntimeError(
+                        "Google rejected the OAuth redirect URL. In Google Cloud Console, create a 'Desktop App' "
+                        "OAuth client (or add http://localhost as an authorized redirect URI) and download the "
+                        "updated credentials.json."
+                    ) from e
+                logger.error(f"Failed to run authentication flow: {e}")
+                return None
             except Exception as e:
                 logger.error(f"Failed to run authentication flow: {e}")
                 return None
@@ -126,7 +153,7 @@ def get_drive_service() -> Optional[Resource]:
     # --- Build and return the service object ---
     if creds and creds.valid:
         try:
-            service = build("drive", "v3", credentials=creds)
+            service = build("drive", "v3", credentials=creds, cache_discovery=False)
             logger.info("Google Drive service created successfully.")
             return service
         except Exception as e:

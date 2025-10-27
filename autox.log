@@ -1,0 +1,37 @@
+2025-10-18 08:33:43,488 [INFO] google_drive_api: Google Drive service created successfully.
+2025-10-18 08:33:43,999 [INFO] google_drive_api: Using configured workspace folder ID: 1YRa4WJFr53mUP4I4R1WECznRjAEOzFm6
+2025-10-18 08:33:56,333 [WARNING] tweepy.client: Unexpected parameter: return_type
+2025-10-18 08:33:56,334 [ERROR] twitter_api: Unexpected error while fetching rate limit status: 'type' object is not iterable
+2025-10-20 15:43:09,313 [INFO] google_drive_api: Google token has expired. Refreshing...
+2025-10-20 15:43:09,799 [INFO] google_drive_api: Google token saved to google_token.json
+2025-10-20 15:43:09,817 [INFO] google_drive_api: Google Drive service created successfully.
+2025-10-20 15:43:10,502 [INFO] google_drive_api: Using configured workspace folder ID: 1YRa4WJFr53mUP4I4R1WECznRjAEOzFm6
+2025-10-20 15:44:36,739 [INFO] google_drive_api: Google Drive service created successfully.
+2025-10-20 15:44:37,256 [INFO] google_drive_api: Using configured workspace folder ID: 1YRa4WJFr53mUP4I4R1WECznRjAEOzFm6
+2025-10-20 15:44:48,802 [INFO] root: Token expired, attempting to refresh...
+2025-10-20 15:44:49,304 [INFO] root: Token refreshed and saved successfully.
+2025-10-20 15:44:49,313 [INFO] google_drive_api: Google Drive service created successfully.
+2025-10-20 15:44:49,313 [INFO] root: Created temporary directory for images: C:\Users\Rodrigo\AppData\Local\Temp\autox_u9wr8frx
+2025-10-20 15:44:49,321 [INFO] root: Downloading Drive image 1_KnYSJlBfjqP3YXOuxCCuAjLaixdcTmn to C:\Users\Rodrigo\AppData\Local\Temp\autox_u9wr8frx\HOW THINGS WORK ebook.jpg...
+2025-10-20 15:44:51,727 [INFO] google_drive_api: Download 100%.
+2025-10-20 15:44:51,730 [INFO] google_drive_api: Successfully downloaded file ID 1_KnYSJlBfjqP3YXOuxCCuAjLaixdcTmn to C:\Users\Rodrigo\AppData\Local\Temp\autox_u9wr8frx\HOW THINGS WORK ebook.jpg
+2025-10-20 15:48:01,028 [INFO] twitter_api: Thread published successfully
+2025-10-20 15:49:43,015 [INFO] google_drive_api: Google Drive service created successfully.
+2025-10-20 15:49:43,640 [INFO] google_drive_api: Using configured workspace folder ID: 1YRa4WJFr53mUP4I4R1WECznRjAEOzFm6
+2025-10-20 15:49:45,079 [WARNING] googleapiclient.http: Encountered 403 Forbidden with reason "fieldNotWritable"
+2025-10-20 15:49:45,087 [ERROR] google_drive_api: Error writing file 'TRES ESTRATIFICACIONES.json': <HttpError 403 when requesting https://www.googleapis.com/upload/drive/v3/files/1OJLtShFwrx1mnyOib7MeZjiCbDL-f78o?fields=id&alt=json&uploadType=resumable returned "The parents field is not directly writable in update requests. Use the addParents and removeParents parameters instead.". Details: "[{'message': 'The parents field is not directly writable in update requests. Use the addParents and removeParents parameters instead.', 'domain': 'global', 'reason': 'fieldNotWritable'}]">
+2025-10-20 15:49:45,087 [ERROR] root: Drive did not return a file ID after attempting to mark thread as sent.
+2025-10-20 15:49:45,087 [INFO] root: Cleaned up temporary directory: C:\Users\Rodrigo\AppData\Local\Temp\autox_u9wr8frx
+2025-10-25 19:08:17,360 [INFO] google_drive_api: Google token has expired. Refreshing...
+2025-10-25 19:08:17,955 [ERROR] google_drive_api: Failed to refresh Google token: ('invalid_grant: Token has been expired or revoked.', {'error': 'invalid_grant', 'error_description': 'Token has been expired or revoked.'})
+2025-10-25 19:08:17,956 [WARNING] google_drive_api: Stored Google token is invalid or revoked; clearing it and forcing re-authentication.
+2025-10-25 19:08:17,957 [INFO] google_drive_api: Removed invalid Google token file: google_token.json
+2025-10-25 19:08:21,987 [INFO] google_drive_api: Starting new Google Drive authentication flow.
+2025-10-25 19:08:38,644 [INFO] google_auth_oauthlib.flow: "GET /?state=bXffngDksfB9JCZHPVQ89UBpBBFd0Z&code=4/0Ab32j91RVGai_J91EP2ETO3styLyBPo9VVsFUWmtVOCEcZKS8XxDhmhsFhY1si1saVbbGg&scope=https://www.googleapis.com/auth/drive HTTP/1.1" 200 65
+2025-10-25 19:08:39,137 [INFO] google_drive_api: Google token saved to google_token.json
+2025-10-25 19:08:39,137 [INFO] google_drive_api: Google Drive service created successfully.
+2025-10-25 19:08:39,737 [INFO] google_drive_api: Using configured workspace folder ID: 1YRa4WJFr53mUP4I4R1WECznRjAEOzFm6
+2025-10-25 19:08:47,315 [INFO] google_drive_api: Google Drive service created successfully.
+2025-10-25 19:08:47,814 [INFO] google_drive_api: Using configured workspace folder ID: 1YRa4WJFr53mUP4I4R1WECznRjAEOzFm6
+2025-10-25 19:09:05,619 [INFO] google_drive_api: Google Drive service created successfully.
+2025-10-25 19:09:06,124 [INFO] google_drive_api: Using configured workspace folder ID: 1YRa4WJFr53mUP4I4R1WECznRjAEOzFm6

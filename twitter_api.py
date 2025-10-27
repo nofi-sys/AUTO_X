@@ -1,15 +1,19 @@
 """Wrapper around Tweepy for posting threads."""
 
 from typing import Callable, List, Optional
+import json
 import logging
 import time
 import tweepy
+import requests
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from config import load_twitter_credentials
 
 logger = logging.getLogger(__name__)
+
+MIN_DELAY_SECONDS = 18.0  # 50 tweet creations per 15 minutes -> ~18 seconds between calls
 
 
 @dataclass
@@ -69,18 +73,13 @@ def get_rate_limit_status(client_v2: tweepy.Client) -> Optional[RateLimitStatus]
         A RateLimitStatus object if the headers are found, otherwise None.
     """
     try:
-        # This is a lightweight call to get headers
-        client_v2.get_me(user_auth=True)
-        headers = client_v2.last_response.headers
+        response = client_v2.get_me(user_auth=True, return_type=requests.Response)
+        headers = response.headers if response is not None else None
 
         if not headers:
             logger.warning("Could not retrieve rate limit headers.")
             return None
 
-        # Headers for the tweet creation endpoint
-        # X-Rate-Limit-Limit: The rate limit ceiling for that endpoint.
-        # X-Rate-Limit-Remaining: The number of requests left for the 15-minute window.
-        # X-Rate-Limit-Reset: The time in UTC epoch seconds when the rate limit window resets.
         limit = int(headers.get("x-rate-limit-limit", 0))
         remaining = int(headers.get("x-rate-limit-remaining", 0))
         reset_timestamp = int(headers.get("x-rate-limit-reset", 0))
@@ -94,6 +93,9 @@ def get_rate_limit_status(client_v2: tweepy.Client) -> Optional[RateLimitStatus]
         )
     except tweepy.errors.TweepyException as e:
         logger.error("Failed to fetch rate limit status: %s", e)
+        return None
+    except Exception as e:
+        logger.error("Unexpected error while fetching rate limit status: %s", e)
         return None
 
 
@@ -118,6 +120,33 @@ def _compute_wait_seconds(exc: tweepy.errors.TooManyRequests) -> Optional[int]:
         except (TypeError, ValueError):
             return None
     return None
+
+
+def _describe_tweepy_error(exc: tweepy.errors.HTTPException) -> str:
+    """Return a compact description of a Tweepy HTTPException."""
+    parts = []
+    api_messages = getattr(exc, "api_messages", None)
+    if api_messages:
+        parts.append("messages=" + "; ".join(api_messages))
+    api_codes = getattr(exc, "api_codes", None)
+    if api_codes:
+        parts.append("codes=" + ",".join(str(code) for code in api_codes))
+    response = getattr(exc, "response", None)
+    if response is not None:
+        body_text = ""
+        try:
+            body_json = response.json()
+            body_text = json.dumps(body_json, ensure_ascii=False)
+        except Exception:
+            try:
+                body_text = response.text
+            except Exception:
+                body_text = ""
+        if body_text:
+            parts.append(f"response={body_text[:400]}")
+    if not parts:
+        parts.append(str(exc))
+    return " | ".join(parts)
 
 
 def publish_thread(
@@ -155,7 +184,7 @@ def publish_thread(
 
     posted_ids: List[Optional[int]] = [None] * total
 
-    delay_seconds = max(delay_seconds, 0.0)
+    delay_seconds = max(delay_seconds, MIN_DELAY_SECONDS)
 
     api_v1 = None
     remaining_images = images[start_index:] if start_index < len(images) else []
@@ -192,12 +221,18 @@ def publish_thread(
             try:
                 upload = api_v1.media_upload(filename=img)
             except tweepy.errors.Forbidden as exc:
-                api_messages = getattr(exc, "api_messages", None) or []
-                error_text = " ".join(api_messages) if api_messages else str(exc)
+                error_details = _describe_tweepy_error(exc)
+                logger.error("Media upload forbidden: %s", error_details)
                 raise PermissionError(
                     "Twitter rejected the media upload. Ensure your OAuth 1.0a credentials have Read & Write "
                     "permissions enabled and regenerate the Access Token & Secret in the developer portal. "
-                    f"Twitter response: {error_text}"
+                    f"Details: {error_details}"
+                ) from exc
+            except tweepy.errors.Unauthorized as exc:
+                logger.error("Media upload failed due to unauthorized OAuth1 credentials: %s", exc)
+                raise PermissionError(
+                    "Twitter reported that the OAuth 1.0a credentials are unauthorized. Double-check the "
+                    "API key/secret and Access Token/Secret in the .env file, regenerating them if necessary."
                 ) from exc
             media_ids = [upload.media_id]
 
@@ -212,8 +247,7 @@ def publish_thread(
                 user_auth=True,
             )
         except tweepy.errors.Forbidden as exc:
-            api_messages = getattr(exc, "api_messages", None) or []
-            error_text = " ".join(api_messages) if api_messages else str(exc)
+            error_text = _describe_tweepy_error(exc)
             if "oauth1" in error_text.lower():
                 raise PermissionError(
                     "Twitter rejected the request because the OAuth 1.0a credentials in the .env file "
@@ -227,6 +261,7 @@ def publish_thread(
                     "Edit the tweet to make it unique and try again.\n\n"
                     f"Tweet snippet: \"{snippet}\""
                 ) from exc
+            logger.error("Tweet creation forbidden: %s", error_text)
             raise
         except tweepy.errors.TooManyRequests as exc:
             wait_seconds = _compute_wait_seconds(exc)

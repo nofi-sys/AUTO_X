@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from ai_splitter import split_thread_with_ai
 import webbrowser
 import time
+from datetime import datetime
 import tweepy
 from config import (
     load_twitter_credentials,
@@ -37,11 +38,17 @@ from google_drive_api import (
     list_files_in_folder,
     read_file_content,
     write_file_content,
-    get_or_create_subfolder,
-    move_file,
 )
 
-logging.basicConfig(level=logging.INFO)
+LOG_FILE = 'autox.log'
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(LOG_FILE, encoding='utf-8'),
+    ],
+)
 
 
 def _center_window(win: tk.Toplevel) -> None:
@@ -60,13 +67,15 @@ MAX_TWEET_LEN = 280
 class LoadThreadDialog(tk.Toplevel):
     """Dialog for selecting a thread from a loaded file."""
 
-    def __init__(self, parent: tk.Tk, threads: List[List[str]]) -> None:  # noqa: D107
+    def __init__(self, parent: tk.Tk, threads: List[Dict[str, Any]]) -> None:  # noqa: D107
         super().__init__(parent)
         self.transient(parent)
         self.title("Select a Thread to Load")
         self.parent = parent
         self.threads = threads
-        self.result: Optional[List[str]] = None
+        self.result: Optional[Dict[str, Any]] = None
+        self.display_threads: List[int] = []
+        self.include_sent_var = tk.BooleanVar(value=False)
 
         body = ttk.Frame(self)
         self._create_widgets(body)
@@ -76,41 +85,88 @@ class LoadThreadDialog(tk.Toplevel):
         self.grab_set()
 
     def _create_widgets(self, master: ttk.Frame) -> None:
-        """Create the tabbed view for thread selection."""
+        """Create the tabbed view for thread selection with filtering."""
         ttk.Label(master, text="Select the thread you want to edit and post:").pack(pady=(0, 10))
 
-        notebook = ttk.Notebook(master)
-        notebook.pack(pady=5, padx=5, expand=True, fill="both")
+        controls_frame = ttk.Frame(master)
+        controls_frame.pack(fill="x", pady=(0, 8))
+        ttk.Checkbutton(
+            controls_frame,
+            text="Show sent threads",
+            variable=self.include_sent_var,
+            command=self._populate_notebook,
+        ).pack(anchor="w")
 
-        for i, thread in enumerate(self.threads):
-            frame = ttk.Frame(notebook, padding=10)
-            notebook.add(frame, text=f"Thread {i + 1}")
+        self.notebook = ttk.Notebook(master)
+        self.notebook.pack(pady=5, padx=5, expand=True, fill="both")
 
+        btn_frame = ttk.Frame(master)
+        btn_frame.pack(pady=(10, 0))
+        self.select_btn = ttk.Button(
+            btn_frame,
+            text="Load Selected Thread",
+            command=self._on_select_click,
+        )
+        cancel_btn = ttk.Button(btn_frame, text="Cancel", command=self._cancel)
+        self.select_btn.pack(side="left", padx=10)
+        cancel_btn.pack(side="right", padx=10)
+
+        self._populate_notebook()
+
+    def _populate_notebook(self) -> None:
+        """Populate the notebook tabs based on the filter state."""
+        for tab_id in self.notebook.tabs():
+            self.notebook.forget(tab_id)
+        for child in self.notebook.winfo_children():
+            child.destroy()
+
+        self.display_threads = []
+        include_sent = self.include_sent_var.get()
+
+        for idx, thread in enumerate(self.threads):
+            sent_flag = bool(thread.get("sent", False))
+            tweets = thread.get("tweets")
+            if sent_flag and not include_sent:
+                continue
+            if not isinstance(tweets, list):
+                continue
+
+            frame = ttk.Frame(self.notebook, padding=10)
             text_area = scrolledtext.ScrolledText(frame, wrap=tk.WORD, height=15, width=80)
-            full_thread_text = "\n\n---\n\n".join(thread)
+            full_thread_text = "\n\n---\n\n".join(tweets)
             text_area.insert(tk.END, full_thread_text)
             text_area.configure(state="disabled")
             text_area.pack(expand=True, fill="both")
 
-        btn_frame = ttk.Frame(master)
-        btn_frame.pack(pady=(10, 0))
-        select_btn = ttk.Button(
-            btn_frame, text="Load Selected Thread", command=lambda: self._select(notebook.index(notebook.select()))
-        )
-        cancel_btn = ttk.Button(btn_frame, text="Cancel", command=self._cancel)
-        select_btn.pack(side="left", padx=10)
-        cancel_btn.pack(side="right", padx=10)
+            label = f"Thread {idx + 1}"
+            if sent_flag:
+                label += " (sent)"
+            self.notebook.add(frame, text=label)
+            self.display_threads.append(idx)
 
-    def _select(self, selected_index: int) -> None:
-        """Handle the 'Select' button click."""
-        self.result = self.threads[selected_index]
+        if not self.display_threads:
+            placeholder = ttk.Frame(self.notebook, padding=20)
+            ttk.Label(placeholder, text="No threads available with the current filter.").pack()
+            self.notebook.add(placeholder, text="(none)")
+            self.select_btn.config(state="disabled")
+        else:
+            self.notebook.select(self.notebook.tabs()[0])
+            self.select_btn.config(state="normal")
+
+    def _on_select_click(self) -> None:
+        selected_tab = self.notebook.index(self.notebook.select()) if self.notebook.tabs() else None
+        if selected_tab is None or not self.display_threads:
+            self.result = None
+            self.destroy()
+            return
+        actual_index = self.display_threads[selected_tab]
+        self.result = {"index": actual_index, "thread": self.threads[actual_index]}
         self.destroy()
 
     def _cancel(self) -> None:
         """Handle the 'Cancel' button click or window close."""
         self.result = None
         self.destroy()
-
 
 class AddPromoDialog(tk.Toplevel):
     """Dialog for adding a new promotional tweet."""
@@ -428,7 +484,7 @@ def split_text_into_tweets(text: str, limit: int = MAX_TWEET_LEN) -> List[str]:
     text = text.strip()
     while len(text) > limit:
         split_pos = text.rfind(" ", 0, limit)
-        if split_pos == -1:  # no space found – hard split
+        if split_pos == -1:  # no space found ÔÇô hard split
             split_pos = limit
         chunks.append(text[:split_pos].strip())
         text = text[split_pos:].strip()
@@ -458,7 +514,9 @@ class ThreadComposer(tk.Tk):
         self.twitter_client: Optional[tweepy.Client] = None
         self.publish_button_default_text = "\U0001f680 Publish Thread"
         self.publish_button_resume_text = "\U0001f680 Resume Thread"
-        self.publish_delay_seconds = 2.0
+        self.publish_delay_seconds = 18.0
+        self.loaded_drive_threads: List[Dict[str, Any]] = []
+        self.loaded_drive_thread_index: Optional[int] = None
 
         # Style for validation labels
         self.style = ttk.Style(self)
@@ -638,10 +696,10 @@ class ThreadComposer(tk.Tk):
         finally:
             self.config(cursor="")
 
-    # ───────────────────────────────────────────────────── GUI CONSTRUCTION ────
+    # ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ GUI CONSTRUCTION ÔöÇÔöÇÔöÇÔöÇ
     def _build_widgets(self) -> None:
         """Create and place the GUI widgets."""
-        # ─── Menu Bar ─────────────────────────────────────────────────────────
+        # ÔöÇÔöÇÔöÇ Menu Bar ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
         menubar = tk.Menu(self)
         self.config(menu=menubar)
 
@@ -657,7 +715,7 @@ class ThreadComposer(tk.Tk):
         settings_menu.add_command(label="Manage Promotions...", command=self._open_promo_manager)
         menubar.add_cascade(label="Settings", menu=settings_menu)
 
-        # ─── Main Widgets ─────────────────────────────────────────────────────
+        # ÔöÇÔöÇÔöÇ Main Widgets ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
         # Input text area
         ttk.Label(self, text="Enter your full thread (blank line = manual break):").pack(anchor="w", padx=6, pady=(6, 0))
         self.input_box = scrolledtext.ScrolledText(self, height=10, wrap=tk.WORD)
@@ -687,7 +745,7 @@ class ThreadComposer(tk.Tk):
         self.language_menu = ttk.Combobox(
             model_lang_frame,
             textvariable=self.language_var,
-            values=["English", "Español Rioplatense Argentino", "Other..."],
+            values=["English", "Espa├▒ol Rioplatense Argentino", "Other..."],
             width=25,
         )
         self.language_menu.pack(side="left", padx=5)
@@ -701,11 +759,11 @@ class ThreadComposer(tk.Tk):
         # --- Action Buttons ---
         button_frame = ttk.Frame(self)
         button_frame.pack(pady=(0, 8))
-        ttk.Button(button_frame, text="↳ Parse into Tweets", command=self._parse_handler).pack(side="left", padx=4)
-        ttk.Button(button_frame, text="🡆 Parse Plain-Thread", command=self._parse_plain_handler).pack(
+        ttk.Button(button_frame, text="Ôå│ Parse into Tweets", command=self._parse_handler).pack(side="left", padx=4)
+        ttk.Button(button_frame, text="­ƒíå Parse Plain-Thread", command=self._parse_plain_handler).pack(
             side="left", padx=4
         )
-        ttk.Button(button_frame, text="✨ Generate with AI", command=self._parse_with_ai_handler).pack(
+        ttk.Button(button_frame, text="Ô£¿ Generate with AI", command=self._parse_with_ai_handler).pack(
             side="left", padx=4
         )
 
@@ -808,7 +866,7 @@ class ThreadComposer(tk.Tk):
         finally:
             self.config(cursor="")
 
-    # ───────────────────────────────────────────────── DRIVE EVENT HANDLERS ────
+    # ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ DRIVE EVENT HANDLERS ÔöÇÔöÇÔöÇÔöÇ
     def _open_drive_thread_file_handler(self) -> None:
         """Open a dialog to select and load a thread file from Google Drive."""
         drive_service = get_drive_service()
@@ -840,27 +898,62 @@ class ThreadComposer(tk.Tk):
                 raise ValueError("File is empty or could not be read.")
 
             data = json.loads(content)
-            threads = data.get("threads")
-            if not isinstance(threads, list) or not all(isinstance(t, list) for t in threads):
+            raw_threads = data.get("threads")
+            if not isinstance(raw_threads, list):
                 raise TypeError("JSON file from Drive is not in the expected format.")
 
+            normalized_threads: List[Dict[str, Any]] = []
+            for entry in raw_threads:
+                if isinstance(entry, dict):
+                    tweets = entry.get("tweets")
+                    if not isinstance(tweets, list) or not all(isinstance(t, str) for t in tweets):
+                        raise TypeError("JSON file from Drive is not in the expected format.")
+                    normalized_threads.append(
+                        {
+                            "tweets": tweets,
+                            "sent": bool(entry.get("sent", False)),
+                            "sent_at": entry.get("sent_at"),
+                        }
+                    )
+                elif isinstance(entry, list) and all(isinstance(t, str) for t in entry):
+                    normalized_threads.append({"tweets": entry, "sent": False, "sent_at": None})
+                else:
+                    raise TypeError("JSON file from Drive is not in the expected format.")
+
+            if not normalized_threads:
+                raise ValueError("No threads found in the selected file.")
+
+            self.loaded_drive_threads = normalized_threads
+
             # Let the user pick which thread from the file to load
-            load_dialog = LoadThreadDialog(self, threads)
+            load_dialog = LoadThreadDialog(self, normalized_threads)
             _center_window(load_dialog)
             self.wait_window(load_dialog)
-            selected_thread = load_dialog.result
+            selection = load_dialog.result
 
-            if selected_thread:
+            if selection:
                 self.opened_drive_thread_file = selected_file  # Store {'id': ..., 'name': ...}
-                self._render_tweets(selected_thread)
+                self.loaded_drive_thread_index = selection["index"]
+                thread_meta = selection["thread"]
+                self._render_tweets(thread_meta.get("tweets", []))
+                if thread_meta.get("sent"):
+                    for label in self.publish_status_labels:
+                        label.config(text="Sent")
+                status_msg = "Thread loaded"
+                if thread_meta.get("sent"):
+                    status_msg += " (marked as sent)"
                 messagebox.showinfo(
                     "Thread Loaded",
-                    f"Thread loaded from '{selected_file['name']}' in Google Drive.",
+                    f"{status_msg} from '{selected_file['name']}' in Google Drive.",
                     parent=self,
                 )
+            else:
+                self.loaded_drive_thread_index = None
         except (json.JSONDecodeError, TypeError, ValueError) as e:
             messagebox.showerror("Error Loading File", f"Failed to load or parse the thread file from Drive:\n{e}", parent=self)
             self.opened_drive_thread_file = None
+            self.loaded_drive_threads = []
+            self.loaded_drive_thread_index = None
 
     def _save_drive_thread_file_handler(self) -> None:
         """Save the current thread to a JSON file in Google Drive."""
@@ -892,10 +985,20 @@ class ThreadComposer(tk.Tk):
             if not filename.lower().endswith(".json"):
                 filename += ".json"
 
-        # Structure the data to be saved. We save the current thread as the only one in the list.
-        # A future improvement could be to load all threads, replace one, and save all back.
-        data_to_save = {"threads": [self.tweets]}
-        content = json.dumps(data_to_save, indent=2, ensure_ascii=False)
+        # Structure the data to be saved, preserving metadata when available.
+        if self.loaded_drive_threads and self.loaded_drive_thread_index is not None:
+            threads_payload = [dict(thread) for thread in self.loaded_drive_threads]
+            entry = dict(threads_payload[self.loaded_drive_thread_index])
+            entry["tweets"] = list(self.tweets)
+            entry.setdefault("sent", False)
+            threads_payload[self.loaded_drive_thread_index] = entry
+        else:
+            threads_payload = [{"tweets": list(self.tweets), "sent": False, "sent_at": None}]
+            self.loaded_drive_threads = threads_payload
+            self.loaded_drive_thread_index = 0
+
+        self.loaded_drive_threads = threads_payload
+        content = json.dumps({"threads": threads_payload}, indent=2, ensure_ascii=False)
 
         try:
             self.config(cursor="watch")
@@ -957,7 +1060,7 @@ class ThreadComposer(tk.Tk):
             messagebox.showwarning("Nothing to parse", "Write something first!")
             return
 
-        # Choose strategy: manual breaks (double‑newline) or auto‑split
+        # Choose strategy: manual breaks (doubleÔÇænewline) or autoÔÇæsplit
         if "\n\n" in raw:
             tweets = [seg.strip() for seg in raw.split("\n\n") if seg.strip()]
         else:
@@ -1303,7 +1406,7 @@ class ThreadComposer(tk.Tk):
             self.publish_btn.config(text=self.publish_button_default_text)
 
             if self.opened_drive_thread_file:
-                self._archive_sent_thread_file()
+                self._mark_thread_as_sent()
 
         except RateLimitError as exc:
             logging.warning(
@@ -1383,50 +1486,57 @@ class ThreadComposer(tk.Tk):
                     logging.error(f"Failed to clean up temporary directory {temp_dir}: {e}")
             self.config(cursor="")
 
-    def _archive_sent_thread_file(self) -> None:
-        """Move the successfully posted thread's source file to an 'enviados' subfolder in Google Drive."""
-        if not self.opened_drive_thread_file:
+    def _mark_thread_as_sent(self) -> None:
+        """Mark the currently loaded Drive thread as sent within its JSON file."""
+        if not self.opened_drive_thread_file or self.loaded_drive_thread_index is None:
+            return
+        if not self.loaded_drive_threads or not (0 <= self.loaded_drive_thread_index < len(self.loaded_drive_threads)):
             return
 
         drive_service = get_drive_service()
         if not drive_service:
-            messagebox.showwarning("Archive Warning", "Could not archive file: Google Drive is not connected.", parent=self)
+            logging.warning("Google Drive service unavailable; cannot mark thread as sent.")
             return
 
         try:
-            file_id = self.opened_drive_thread_file["id"]
-            filename = self.opened_drive_thread_file["name"]
+            workspace_id = get_or_create_workspace_folder(drive_service)
+        except ConnectionError as exc:
+            logging.error("Failed to resolve Drive workspace while marking thread as sent: %s", exc)
+            return
+        if not workspace_id:
+            logging.error("Could not determine the workspace folder while marking thread as sent.")
+            return
 
-            try:
-                workspace_id = get_or_create_workspace_folder(drive_service)
-            except ConnectionError:
-                raise
-            if not workspace_id:
-                raise ConnectionError("Could not determine the workspace folder.")
+        file_id = self.opened_drive_thread_file.get("id")
+        filename = self.opened_drive_thread_file.get("name")
+        if not file_id or not filename:
+            logging.error("Missing file metadata; cannot update Drive file with sent status.")
+            return
 
-            archive_folder_id = get_or_create_subfolder(drive_service, "enviados", workspace_id)
-            if not archive_folder_id:
-                raise ConnectionError("Could not create the 'enviados' subfolder in Drive.")
+        entry = dict(self.loaded_drive_threads[self.loaded_drive_thread_index])
+        entry["sent"] = True
+        entry["sent_at"] = datetime.utcnow().isoformat()
+        self.loaded_drive_threads[self.loaded_drive_thread_index] = entry
 
-            success = move_file(drive_service, file_id, archive_folder_id)
-            if success:
-                messagebox.showinfo(
-                    "File Archived",
-                    f"The source file '{filename}' has been moved to the 'enviados' subfolder in Google Drive.",
-                    parent=self,
-                )
+        content = json.dumps({"threads": self.loaded_drive_threads}, indent=2, ensure_ascii=False)
+        try:
+            updated_id = write_file_content(drive_service, filename, content, workspace_id, file_id)
+            if updated_id:
+                self.opened_drive_thread_file = {"id": updated_id, "name": filename}
+                self._set_publish_status(self.loaded_drive_thread_index, "Sent")
+                logging.info("Marked Drive thread %d as sent in '%s'.", self.loaded_drive_thread_index + 1, filename)
             else:
-                raise IOError(f"Failed to move file '{filename}' in Drive.")
-
-        except Exception as e:
-            logging.exception(f"Could not archive sent thread file in Drive: {self.opened_drive_thread_file}")
-            messagebox.showerror("Archive Error", f"Could not move the source file in Google Drive:\n{e}", parent=self)
-        finally:
-            # Reset the file info regardless of success to prevent re-archiving
-            self.opened_drive_thread_file = None
-
+                logging.error("Drive did not return a file ID after attempting to mark thread as sent.")
+        except Exception as exc:
+            logging.exception("Failed to update Drive file '%s' with sent status.", filename)
+            messagebox.showerror(
+                "Google Drive Error",
+                f"Could not update the Drive file to mark the thread as sent:\n{exc}",
+                parent=self,
+            )
 
 if __name__ == "__main__":
     app = ThreadComposer()
     app.mainloop()
+
 
